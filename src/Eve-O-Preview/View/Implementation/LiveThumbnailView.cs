@@ -14,8 +14,8 @@ namespace EveOPreview.View
 		private IThumbnailConfiguration _config;
 		#endregion
 
-		public LiveThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager)
-			: base(windowManager, config, thumbnailManager)
+		public LiveThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager, ICharacterLocationTracker characterLocationTracker)
+			: base(windowManager, config, thumbnailManager, characterLocationTracker)
 		{
 			this._startLocation = new Point(0, 0);
 			this._endLocation = new Point(this.ClientSize);
@@ -55,6 +55,8 @@ namespace EveOPreview.View
 		private void RegisterThumbnail()
 		{
 			this._thumbnail = this.WindowManager.GetLiveThumbnail(this.Handle, this.Id);
+			CropRegion cropRegion = this._config.GetCropRegion(this.Title);
+			this._thumbnail.SetSourceRegion(cropRegion?.ToRectangleF());
 			this._thumbnail.Move(this._startLocation.X, this._startLocation.Y, this._endLocation.X, this._endLocation.Y);
 			this._thumbnail.Update();
 		}

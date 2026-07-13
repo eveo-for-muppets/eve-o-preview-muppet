@@ -13,8 +13,8 @@ namespace EveOPreview.View
 		private IThumbnailConfiguration _config;
 		#endregion
 
-		public StaticThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager)
-			: base(windowManager, config, thumbnailManager)
+		public StaticThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager, ICharacterLocationTracker characterLocationTracker)
+			: base(windowManager, config, thumbnailManager, characterLocationTracker)
 		{
 			this._thumbnail = new StaticThumbnailImage
 			{
@@ -37,10 +37,40 @@ namespace EveOPreview.View
 			var thumbnail = this.WindowManager.GetStaticThumbnail(this.Id);
 			if (thumbnail != null)
 			{
+				CropRegion cropRegion = this._config.GetCropRegion(this.Title);
+				if (cropRegion != null)
+				{
+					Image fullThumbnail = thumbnail;
+					thumbnail = CropImage(fullThumbnail, cropRegion);
+					fullThumbnail.Dispose();
+				}
+
 				var oldImage = this._thumbnail.Image;
 				this._thumbnail.Image = thumbnail;
 				oldImage?.Dispose();
 			}
+		}
+
+		private static Image CropImage(Image source, CropRegion cropRegion)
+		{
+			RectangleF normalized = cropRegion.ToRectangleF();
+			int left = Math.Clamp((int)Math.Floor(normalized.Left * source.Width), 0, source.Width - 1);
+			int top = Math.Clamp((int)Math.Floor(normalized.Top * source.Height), 0, source.Height - 1);
+			int right = Math.Clamp((int)Math.Ceiling(normalized.Right * source.Width), left + 1, source.Width);
+			int bottom = Math.Clamp((int)Math.Ceiling(normalized.Bottom * source.Height), top + 1, source.Height);
+			Rectangle sourceRectangle = Rectangle.FromLTRB(left, top, right, bottom);
+
+			Bitmap cropped = new Bitmap(sourceRectangle.Width, sourceRectangle.Height);
+			using (Graphics graphics = Graphics.FromImage(cropped))
+			{
+				graphics.DrawImage(
+					source,
+					new Rectangle(0, 0, cropped.Width, cropped.Height),
+					sourceRectangle,
+					GraphicsUnit.Pixel);
+			}
+
+			return cropped;
 		}
 
 		protected override void ResizeThumbnail(int baseWidth, int baseHeight, int highlightWidthTop, int highlightWidthRight, int highlightWidthBottom, int highlightWidthLeft)

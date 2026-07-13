@@ -34,6 +34,7 @@ namespace EveOPreview.Services
 		private readonly IProcessMonitor _processMonitor;
 		private readonly IWindowManager _windowManager;
 		private readonly IThumbnailConfiguration _configuration;
+		private readonly ICharacterLocationTracker _characterLocationTracker;
 		private readonly DispatcherTimer _thumbnailUpdateTimer;
 		private readonly IThumbnailViewFactory _thumbnailViewFactory;
 		private readonly Dictionary<IntPtr, IThumbnailView> _thumbnailViews;
@@ -53,12 +54,13 @@ namespace EveOPreview.Services
 		private List<HotkeyHandler> _cycleClientHotkeyHandlers = new List<HotkeyHandler>();
 		#endregion
 
-		public ThumbnailManager(IMediator mediator, IThumbnailConfiguration configuration, IProcessMonitor processMonitor, IWindowManager windowManager, IThumbnailViewFactory factory)
+		public ThumbnailManager(IMediator mediator, IThumbnailConfiguration configuration, IProcessMonitor processMonitor, IWindowManager windowManager, IThumbnailViewFactory factory, ICharacterLocationTracker characterLocationTracker)
 		{
 			this._mediator = mediator;
 			this._processMonitor = processMonitor;
 			this._windowManager = windowManager;
 			this._configuration = configuration;
+			this._characterLocationTracker = characterLocationTracker;
 			this._thumbnailViewFactory = factory;
 
 			this._activeClient = (IntPtr.Zero, ThumbnailManager.DEFAULT_CLIENT_TITLE);
@@ -381,6 +383,7 @@ namespace EveOPreview.Services
 
 		public void Start()
 		{
+			this._characterLocationTracker.Start();
 			this._thumbnailUpdateTimer.Start();
 
 			this.RefreshThumbnails();
@@ -389,6 +392,7 @@ namespace EveOPreview.Services
 		public void Stop()
 		{
 			this._thumbnailUpdateTimer.Stop();
+			this._characterLocationTracker.Stop();
 		}
 
 		private void ThumbnailUpdateTimerTick(object sender, EventArgs e)
@@ -412,7 +416,7 @@ namespace EveOPreview.Services
 					initialSize = this._configuration.PerClientThumbnailSize[process.Title];
 				}
 
-				IThumbnailView view = this._thumbnailViewFactory.Create(process.Handle, process.Title, this._configuration.ThumbnailSize);
+				IThumbnailView view = this._thumbnailViewFactory.Create(process.Handle, process.Title, initialSize);
 				view.IsOverlayEnabled = this._configuration.ShowThumbnailOverlays;
 				view.IsExcludedFromCycleGroup = false;
 				view.SetFrames(this._configuration.ShowThumbnailFrames);

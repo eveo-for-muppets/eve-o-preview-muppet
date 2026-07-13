@@ -14,6 +14,13 @@ namespace EveOPreview.View
 {
 	public partial class MainForm : Form, IMainFormView
 	{
+		private sealed class CropPresetComboItem
+		{
+			public string Id { get; init; }
+			public string Name { get; init; }
+			public override string ToString() => this.Name;
+		}
+
 		#region Private fields
 		private readonly ApplicationContext _context;
 		private readonly Dictionary<ViewZoomAnchor, RadioButton> _zoomAnchorMap;
@@ -28,6 +35,12 @@ namespace EveOPreview.View
 		private string _iconName;
 		private bool _hotkeyCaptureActive = false;
 		private Dictionary<string, string> _configurationFilenames = new Dictionary<string, string>();
+		private System.Windows.Forms.Button _selectCropButton;
+		private System.Windows.Forms.Button _resetCropButton;
+		private CropPresetsPanel _cropPresetsPanel;
+		private System.Windows.Forms.ComboBox _cycleCropPresetCombo;
+		private System.Windows.Forms.Button _cycleCropApplyButton;
+		private System.Windows.Forms.CheckBox _showSolarSystemOverlayCheckBox;
 		#endregion
 
 		public MainForm(ApplicationContext context)
@@ -42,6 +55,9 @@ namespace EveOPreview.View
 			this._maximumSize = new Size(20, 20);
 
 			InitializeComponent();
+			this.InitializeCropPresetsTab();
+			this.InitializeCycleGroupCropControls();
+			this.InitializeSolarSystemOverlayControl();
 
 			this.ThumbnailsList.DisplayMember = "Title";
 
@@ -301,6 +317,12 @@ namespace EveOPreview.View
 			set => this.ShowThumbnailOverlaysCheckBox.Checked = value;
 		}
 
+		public bool ShowSolarSystemOverlay
+		{
+			get => this._showSolarSystemOverlayCheckBox.Checked;
+			set => this._showSolarSystemOverlayCheckBox.Checked = value;
+		}
+
 		public bool ShowThumbnailFrames
 		{
 			get => this.ShowThumbnailFramesCheckBox.Checked;
@@ -459,6 +481,56 @@ namespace EveOPreview.View
 		public Action ThumbnailsSizeChanged { get; set; }
 
 		public Action<string> ThumbnailStateChanged { get; set; }
+		public Action<string> CropRegionSelectionRequested { get; set; }
+		public Action<string> CropRegionResetRequested { get; set; }
+
+		public Action<string> CropPresetSelected
+		{
+			get => this._cropPresetsPanel.PresetSelected;
+			set => this._cropPresetsPanel.PresetSelected = value;
+		}
+
+		public Action<string> CropPresetCreateRequested
+		{
+			get => this._cropPresetsPanel.CreatePresetRequested;
+			set => this._cropPresetsPanel.CreatePresetRequested = value;
+		}
+
+		public Action<string, string> CropPresetRenameRequested
+		{
+			get => this._cropPresetsPanel.RenamePresetRequested;
+			set => this._cropPresetsPanel.RenamePresetRequested = value;
+		}
+
+		public Action<string> CropPresetDeleteRequested
+		{
+			get => this._cropPresetsPanel.DeletePresetRequested;
+			set => this._cropPresetsPanel.DeletePresetRequested = value;
+		}
+
+		public Action<string, string> CropPresetSelectAreaRequested
+		{
+			get => this._cropPresetsPanel.SelectAreaRequested;
+			set => this._cropPresetsPanel.SelectAreaRequested = value;
+		}
+
+		public Func<string, IList<string>, bool> CropAssignmentsApplyRequested
+		{
+			get => this._cropPresetsPanel.ApplyAssignmentsRequested;
+			set => this._cropPresetsPanel.ApplyAssignmentsRequested = value;
+		}
+
+		public Action<int, bool> CropCycleGroupSelectRequested
+		{
+			get => this._cropPresetsPanel.SelectCycleGroupRequested;
+			set => this._cropPresetsPanel.SelectCycleGroupRequested = value;
+		}
+
+		public Func<string, int, bool, bool, bool> CropCycleGroupAssignRequested
+		{
+			get => this._cropPresetsPanel.AssignCycleGroupRequested;
+			set => this._cropPresetsPanel.AssignCycleGroupRequested = value;
+		}
 
 		public Action DocumentationLinkActivated { get; set; }
 		public Action SelectedCycleGroupChanged { get; set; }
@@ -790,6 +862,254 @@ namespace EveOPreview.View
 			selectedItem.IsDisabled = (e.NewValue == CheckState.Checked);
 
 			this.ThumbnailStateChanged?.Invoke(selectedItem.Title);
+		}
+
+		private void InitializeCropControls()
+		{
+			Control clientsPanel = this.ThumbnailsList.Parent;
+			foreach (Control oldLabel in clientsPanel.Controls.Find("ThumbnailsListLabel", false))
+			{
+				oldLabel.Visible = false;
+			}
+
+			Label cropHeader = new Label
+			{
+				AutoSize = true,
+				Location = new Point(8, 6),
+				Text = "Thumbnails (check to force hide)"
+			};
+
+			this._selectCropButton = new System.Windows.Forms.Button
+			{
+				Location = new Point(8, 30),
+				Size = new Size(150, 32),
+				Text = "Edit assigned crop...",
+				UseVisualStyleBackColor = true
+			};
+			this._selectCropButton.Click += this.SelectCropButton_Click;
+
+			this._resetCropButton = new System.Windows.Forms.Button
+			{
+				Location = new Point(166, 30),
+				Size = new Size(140, 32),
+				Text = "Use full window",
+				UseVisualStyleBackColor = true
+			};
+			this._resetCropButton.Click += this.ResetCropButton_Click;
+
+			Label cropHint = new Label
+			{
+				AutoSize = true,
+				Location = new Point(8, 66),
+				Text = "Select a client below, or manage reusable crops in the Crops tab."
+			};
+
+			clientsPanel.Controls.Add(cropHeader);
+			clientsPanel.Controls.Add(this._selectCropButton);
+			clientsPanel.Controls.Add(this._resetCropButton);
+			clientsPanel.Controls.Add(cropHint);
+
+			this.ThumbnailsList.Dock = DockStyle.None;
+			this.ThumbnailsList.Anchor = AnchorStyles.None;
+			void LayoutClientList()
+			{
+				const int listTop = 90;
+				this.ThumbnailsList.SetBounds(
+					0,
+					listTop,
+					clientsPanel.ClientSize.Width,
+					Math.Max(50, clientsPanel.ClientSize.Height - listTop));
+			}
+
+			clientsPanel.Resize += (sender, args) => LayoutClientList();
+			LayoutClientList();
+		}
+
+		private void InitializeCropPresetsTab()
+		{
+			this._cropPresetsPanel = new CropPresetsPanel();
+			TabControl contentTabControl = this.Controls
+				.OfType<TabControl>()
+				.FirstOrDefault(control => control.Name == "ContentTabControl");
+			TabPage clientsTabPage = this.ThumbnailsList.Parent?.Parent as TabPage;
+			if (contentTabControl == null || clientsTabPage == null)
+			{
+				return;
+			}
+
+			TabPage cropsTab = new TabPage
+			{
+				Name = "CropsTabPage",
+				Text = "Crops",
+				UseVisualStyleBackColor = true,
+				Padding = new Padding(0)
+			};
+			cropsTab.Controls.Add(this._cropPresetsPanel);
+			int clientsIndex = contentTabControl.TabPages.IndexOf(clientsTabPage);
+			contentTabControl.TabPages.Insert(Math.Max(0, clientsIndex), cropsTab);
+		}
+
+		private void InitializeCycleGroupCropControls()
+		{
+			FlowLayoutPanel cropPanel = new FlowLayoutPanel
+			{
+				Dock = DockStyle.Bottom,
+				Height = 38,
+				WrapContents = false,
+				Padding = new Padding(3, 2, 3, 2)
+			};
+			cropPanel.Controls.Add(new Label
+			{
+				Text = "Crop",
+				AutoSize = true,
+				Margin = new Padding(0, 7, 5, 0)
+			});
+			this._cycleCropPresetCombo = new System.Windows.Forms.ComboBox
+			{
+				DropDownStyle = ComboBoxStyle.DropDownList,
+				Width = 135,
+				Margin = new Padding(0, 2, 5, 2)
+			};
+			this._cycleCropPresetCombo.SelectedIndexChanged += (sender, args) =>
+				this._cycleCropApplyButton.Enabled = this._cycleCropPresetCombo.SelectedItem is CropPresetComboItem;
+			this._cycleCropApplyButton = new System.Windows.Forms.Button
+			{
+				Text = "Apply crop",
+				AutoSize = true,
+				Height = 30,
+				Enabled = false,
+				Margin = new Padding(0, 1, 0, 1)
+			};
+			this._cycleCropApplyButton.Click += this.CycleCropApplyButton_Click;
+			cropPanel.Controls.Add(this._cycleCropPresetCombo);
+			cropPanel.Controls.Add(this._cycleCropApplyButton);
+			this.CycleGroupTabPage.Controls.Add(cropPanel);
+			cropPanel.BringToFront();
+		}
+
+		private void InitializeSolarSystemOverlayControl()
+		{
+			this._showSolarSystemOverlayCheckBox = new System.Windows.Forms.CheckBox
+			{
+				Name = "ShowSolarSystemOverlayCheckBox",
+				Text = "Show solar system from game logs",
+				AutoSize = true,
+				Checked = true,
+				Location = new Point(13, 285),
+				TabIndex = 48,
+				UseVisualStyleBackColor = true
+			};
+			this._showSolarSystemOverlayCheckBox.CheckedChanged += this.OptionChanged_Handler;
+			this.ShowThumbnailOverlaysCheckBox.Parent?.Controls.Add(this._showSolarSystemOverlayCheckBox);
+			this._showSolarSystemOverlayCheckBox.BringToFront();
+		}
+
+		public string SelectedCropPresetId => this._cropPresetsPanel.SelectedPresetId;
+		public bool HasPendingCropAssignments => this._cropPresetsPanel.HasPendingAssignments;
+
+		public void SetCropPresets(IList<CropPreset> presets, string selectedPresetId)
+		{
+			this._cropPresetsPanel.SetPresets(presets, selectedPresetId);
+			this.SetCycleGroupCropPresets(presets, selectedPresetId);
+		}
+
+		private void SetCycleGroupCropPresets(IList<CropPreset> presets, string selectedPresetId)
+		{
+			string previousId = (this._cycleCropPresetCombo.SelectedItem as CropPresetComboItem)?.Id ?? selectedPresetId;
+			this._cycleCropPresetCombo.Items.Clear();
+			foreach (CropPreset preset in (presets ?? new List<CropPreset>())
+				.Where(preset => preset?.IsValid == true)
+				.OrderBy(preset => preset.Name, StringComparer.OrdinalIgnoreCase))
+			{
+				this._cycleCropPresetCombo.Items.Add(new CropPresetComboItem { Id = preset.Id, Name = preset.Name });
+			}
+
+			int selectedIndex = -1;
+			for (int index = 0; index < this._cycleCropPresetCombo.Items.Count; index++)
+			{
+				if (string.Equals((this._cycleCropPresetCombo.Items[index] as CropPresetComboItem)?.Id, previousId, StringComparison.Ordinal))
+				{
+					selectedIndex = index;
+					break;
+				}
+			}
+			this._cycleCropPresetCombo.SelectedIndex = selectedIndex >= 0
+				? selectedIndex
+				: (this._cycleCropPresetCombo.Items.Count > 0 ? 0 : -1);
+			this._cycleCropApplyButton.Enabled = this._cycleCropPresetCombo.SelectedItem is CropPresetComboItem;
+		}
+
+		private void CycleCropApplyButton_Click(object sender, EventArgs e)
+		{
+			if (this._cycleCropPresetCombo.SelectedItem is not CropPresetComboItem preset ||
+				!this._cropPresetsPanel.ResolvePendingAssignments())
+			{
+				return;
+			}
+
+			this.CropCycleGroupAssignRequested?.Invoke(preset.Id, this.SelectedCycleGroup, false, false);
+		}
+
+		public void SetCropPresetRegion(CropRegion region)
+		{
+			this._cropPresetsPanel.SetRegion(region);
+		}
+
+		public void SetCropSourceClients(IList<string> clients)
+		{
+			this._cropPresetsPanel.SetSourceClients(clients);
+		}
+
+		public void SetCropClients(
+			IList<string> clients,
+			IDictionary<string, string> currentPresetNames,
+			ISet<string> openClients,
+			ISet<string> checkedClients)
+		{
+			this._cropPresetsPanel.SetClients(clients, currentPresetNames, openClients, checkedClients);
+		}
+
+		public void SelectCropClients(IList<string> clients, bool onlyOpen)
+		{
+			this._cropPresetsPanel.SelectClients(clients, onlyOpen);
+		}
+
+		private void SelectCropButton_Click(object sender, EventArgs e)
+		{
+			if (!this.TryGetSelectedClientTitle(out string title))
+			{
+				return;
+			}
+
+			this.CropRegionSelectionRequested?.Invoke(title);
+		}
+
+		private void ResetCropButton_Click(object sender, EventArgs e)
+		{
+			if (!this.TryGetSelectedClientTitle(out string title))
+			{
+				return;
+			}
+
+			this.CropRegionResetRequested?.Invoke(title);
+		}
+
+		private bool TryGetSelectedClientTitle(out string title)
+		{
+			if (this.ThumbnailsList.SelectedItem is IThumbnailDescription selectedItem)
+			{
+				title = selectedItem.Title;
+				return true;
+			}
+
+			title = null;
+			MessageBox.Show(
+				this,
+				"Select a client in the list first.",
+				"No client selected",
+				MessageBoxButtons.OK,
+				MessageBoxIcon.Information);
+			return false;
 		}
 
 		private void DocumentationLinkClicked_Handler(object sender, LinkLabelLinkClickedEventArgs e)

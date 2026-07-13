@@ -85,6 +85,12 @@ namespace EveOPreview.Configuration.Implementation
 				{"EVE - Example Toon 2", new Size(200, 200)}
 			};
 
+			this.PerClientCropRegions = new Dictionary<string, CropRegion>();
+			this.CropPresets = new Dictionary<string, CropPreset>();
+			this.PerClientCropPresetIds = new Dictionary<string, string>();
+			this.PerClientSolarSystems = new Dictionary<string, string>();
+			this.PerClientSolarSystemObservations = new Dictionary<string, SolarSystemObservation>();
+
 			this.PerClientZoomAnchor = new Dictionary<string, ZoomAnchor>
 			{
 				{"EVE - Example Toon 1", ZoomAnchor.N },
@@ -140,6 +146,7 @@ namespace EveOPreview.Configuration.Implementation
 			this.CycleGroupIndicatorAnchor = ZoomAnchor.NW;
 
 			this.ShowThumbnailOverlays = true;
+			this.ShowSolarSystemOverlay = true;
 			this.ShowThumbnailFrames = false;
 			this.LockThumbnailLocation = false;
 
@@ -230,6 +237,21 @@ namespace EveOPreview.Configuration.Implementation
 		[JsonProperty("PerClientThumbnailSize")]
 		public Dictionary<string, Size> PerClientThumbnailSize { get; set; }
 
+		[JsonProperty("PerClientCropRegions")]
+		public Dictionary<string, CropRegion> PerClientCropRegions { get; set; }
+
+		[JsonProperty("CropPresets")]
+		public Dictionary<string, CropPreset> CropPresets { get; set; }
+
+		[JsonProperty("PerClientCropPresetIds")]
+		public Dictionary<string, string> PerClientCropPresetIds { get; set; }
+
+		[JsonProperty("PerClientSolarSystems")]
+		public Dictionary<string, string> PerClientSolarSystems { get; set; }
+
+		[JsonProperty("PerClientSolarSystemObservations")]
+		public Dictionary<string, SolarSystemObservation> PerClientSolarSystemObservations { get; set; }
+
 		[JsonProperty("PerClientZoomAnchor")]
 		public Dictionary<string, ZoomAnchor> PerClientZoomAnchor{ get; set; }
 		public bool MinimizeToTray { get; set; }
@@ -295,6 +317,7 @@ namespace EveOPreview.Configuration.Implementation
 		public ZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		public bool ShowThumbnailOverlays { get; set; }
+		public bool ShowSolarSystemOverlay { get; set; }
 		public bool ShowThumbnailFrames { get; set; }
 		public bool LockThumbnailLocation { get; set; }
 		public bool ThumbnailSnapToGrid { get; set; }
@@ -368,6 +391,157 @@ namespace EveOPreview.Configuration.Implementation
 		{
 			ZoomAnchor zoomAnchor;
 			return this.PerClientZoomAnchor.TryGetValue(currentClient, out zoomAnchor) ? zoomAnchor : defaultZoomAnchor;
+		}
+
+		public CropRegion GetCropRegion(string currentClient)
+		{
+			CropPreset preset = this.GetCropPresetForClient(currentClient);
+			if (preset?.Region?.IsValid == true)
+			{
+				return preset.Region;
+			}
+
+			if (this.PerClientCropRegions != null &&
+				this.PerClientCropRegions.TryGetValue(currentClient, out CropRegion cropRegion) &&
+				cropRegion?.IsValid == true)
+			{
+				return cropRegion;
+			}
+
+			return null;
+		}
+
+		public CropPreset GetCropPreset(string presetId)
+		{
+			if (string.IsNullOrWhiteSpace(presetId) || this.CropPresets == null)
+			{
+				return null;
+			}
+
+			return this.CropPresets.TryGetValue(presetId, out CropPreset preset) && preset?.IsValid == true
+				? preset
+				: null;
+		}
+
+		public CropPreset GetCropPresetForClient(string currentClient)
+		{
+			if (string.IsNullOrWhiteSpace(currentClient) ||
+				this.PerClientCropPresetIds == null ||
+				!this.PerClientCropPresetIds.TryGetValue(currentClient, out string presetId))
+			{
+				return null;
+			}
+
+			return this.GetCropPreset(presetId);
+		}
+
+		public string CreateCropPreset(string name, CropRegion cropRegion)
+		{
+			if (string.IsNullOrWhiteSpace(name) || cropRegion?.IsValid != true)
+			{
+				return null;
+			}
+
+			this.CropPresets ??= new Dictionary<string, CropPreset>();
+			if (this.CropPresets.Values.Any(preset =>
+				string.Equals(preset?.Name, name.Trim(), StringComparison.OrdinalIgnoreCase)))
+			{
+				return null;
+			}
+
+			CropPreset newPreset = CropPreset.Create(name, CloneRegion(cropRegion));
+			this.CropPresets[newPreset.Id] = newPreset;
+			return newPreset.Id;
+		}
+
+		public bool RenameCropPreset(string presetId, string name)
+		{
+			CropPreset preset = this.GetCropPreset(presetId);
+			if (preset == null || string.IsNullOrWhiteSpace(name))
+			{
+				return false;
+			}
+
+			string trimmedName = name.Trim();
+			if (this.CropPresets.Values.Any(other =>
+				other != null &&
+				!string.Equals(other.Id, presetId, StringComparison.Ordinal) &&
+				string.Equals(other.Name, trimmedName, StringComparison.OrdinalIgnoreCase)))
+			{
+				return false;
+			}
+
+			preset.Name = trimmedName;
+			return true;
+		}
+
+		public IList<string> DeleteCropPreset(string presetId)
+		{
+			List<string> affectedClients = this.GetClientsAssignedToPreset(presetId);
+			foreach (string client in affectedClients)
+			{
+				this.UnassignCropPreset(client);
+			}
+
+			this.CropPresets?.Remove(presetId);
+			return affectedClients;
+		}
+
+		public IList<string> UpdateCropPresetRegion(string presetId, CropRegion cropRegion)
+		{
+			CropPreset preset = this.GetCropPreset(presetId);
+			if (preset == null || cropRegion?.IsValid != true)
+			{
+				return new List<string>();
+			}
+
+			preset.Region = CloneRegion(cropRegion);
+			List<string> affectedClients = this.GetClientsAssignedToPreset(presetId);
+			foreach (string client in affectedClients)
+			{
+				this.PerClientCropRegions[client] = CloneRegion(preset.Region);
+			}
+
+			return affectedClients;
+		}
+
+		public void AssignCropPreset(string currentClient, string presetId)
+		{
+			CropPreset preset = this.GetCropPreset(presetId);
+			if (string.IsNullOrWhiteSpace(currentClient) || preset == null)
+			{
+				return;
+			}
+
+			this.PerClientCropPresetIds ??= new Dictionary<string, string>();
+			this.PerClientCropRegions ??= new Dictionary<string, CropRegion>();
+			this.PerClientCropPresetIds[currentClient] = preset.Id;
+			// Keep the legacy value synchronized so an older personal build can
+			// still read the effective per-character crop.
+			this.PerClientCropRegions[currentClient] = CloneRegion(preset.Region);
+		}
+
+		public void UnassignCropPreset(string currentClient)
+		{
+			this.PerClientCropPresetIds?.Remove(currentClient);
+			this.PerClientCropRegions?.Remove(currentClient);
+		}
+
+		public void SetCropRegion(string currentClient, CropRegion cropRegion)
+		{
+			if (string.IsNullOrWhiteSpace(currentClient) || cropRegion?.IsValid != true)
+			{
+				return;
+			}
+
+			this.PerClientCropRegions ??= new Dictionary<string, CropRegion>();
+			this.PerClientCropPresetIds?.Remove(currentClient);
+			this.PerClientCropRegions[currentClient] = cropRegion;
+		}
+
+		public void RemoveCropRegion(string currentClient)
+		{
+			this.UnassignCropPreset(currentClient);
 		}
 
 		public void SetThumbnailLocation(string currentClient, string activeClient, Point location)
@@ -456,6 +630,60 @@ namespace EveOPreview.Configuration.Implementation
 		/// </summary>
 		public void ApplyRestrictions()
 		{
+			this.PerClientCropRegions ??= new Dictionary<string, CropRegion>();
+			this.CropPresets ??= new Dictionary<string, CropPreset>();
+			this.PerClientCropPresetIds ??= new Dictionary<string, string>();
+			this.PerClientSolarSystems ??= new Dictionary<string, string>();
+			this.PerClientSolarSystemObservations ??= new Dictionary<string, SolarSystemObservation>();
+			foreach (string invalidClient in this.PerClientSolarSystems
+				.Where(entry => string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
+				.Select(entry => entry.Key)
+				.ToList())
+			{
+				this.PerClientSolarSystems.Remove(invalidClient);
+			}
+			foreach (string invalidClient in this.PerClientSolarSystemObservations
+				.Where(entry => string.IsNullOrWhiteSpace(entry.Key) || entry.Value?.IsValid != true)
+				.Select(entry => entry.Key)
+				.ToList())
+			{
+				this.PerClientSolarSystemObservations.Remove(invalidClient);
+			}
+			foreach (string invalidClient in this.PerClientCropRegions
+				.Where(entry => entry.Value?.IsValid != true)
+				.Select(entry => entry.Key)
+				.ToList())
+			{
+				this.PerClientCropRegions.Remove(invalidClient);
+			}
+
+			foreach (string invalidPresetId in this.CropPresets
+				.Where(entry => entry.Value?.IsValid != true ||
+					!string.Equals(entry.Key, entry.Value.Id, StringComparison.Ordinal))
+				.Select(entry => entry.Key)
+				.ToList())
+			{
+				this.CropPresets.Remove(invalidPresetId);
+			}
+
+			foreach (string invalidClient in this.PerClientCropPresetIds
+				.Where(entry => string.IsNullOrWhiteSpace(entry.Key) || this.GetCropPreset(entry.Value) == null)
+				.Select(entry => entry.Key)
+				.ToList())
+			{
+				this.PerClientCropPresetIds.Remove(invalidClient);
+			}
+
+			this.ImportLegacyCropRegions();
+			foreach (KeyValuePair<string, string> assignment in this.PerClientCropPresetIds)
+			{
+				CropPreset preset = this.GetCropPreset(assignment.Value);
+				if (preset != null)
+				{
+					this.PerClientCropRegions[assignment.Key] = CloneRegion(preset.Region);
+				}
+			}
+
 #if LINUX
 			this.ThumbnailRefreshPeriod = ThumbnailConfiguration.ApplyRestrictions(this.ThumbnailRefreshPeriod, 10, 1000);
 #else
@@ -470,8 +698,85 @@ namespace EveOPreview.Configuration.Implementation
 		}
 		public IList<string> GetAllKnownClients()
 		{
-			// Prefer FlatLayout keys as the source of known clients
-			return this.FlatLayout?.Keys?.ToList() ?? new List<string>();
+			HashSet<string> clients = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			AddKeys(clients, this.FlatLayout);
+			AddKeys(clients, this.PerClientCropRegions);
+			AddKeys(clients, this.PerClientCropPresetIds);
+			AddKeys(clients, this.PerClientSolarSystems);
+			AddKeys(clients, this.PerClientSolarSystemObservations);
+			AddKeys(clients, this.PerClientAliases);
+			AddKeys(clients, this.PerClientThumbnailSize);
+			AddKeys(clients, this.CycleGroup1ClientsOrder);
+			AddKeys(clients, this.CycleGroup2ClientsOrder);
+			AddKeys(clients, this.CycleGroup3ClientsOrder);
+			AddKeys(clients, this.CycleGroup4ClientsOrder);
+			AddKeys(clients, this.CycleGroup5ClientsOrder);
+			return clients.OrderBy(client => client, StringComparer.OrdinalIgnoreCase).ToList();
+		}
+
+		private List<string> GetClientsAssignedToPreset(string presetId)
+		{
+			return this.PerClientCropPresetIds?
+				.Where(entry => string.Equals(entry.Value, presetId, StringComparison.Ordinal))
+				.Select(entry => entry.Key)
+				.ToList() ?? new List<string>();
+		}
+
+		private void ImportLegacyCropRegions()
+		{
+			int importedIndex = this.CropPresets.Count + 1;
+			foreach (KeyValuePair<string, CropRegion> entry in this.PerClientCropRegions.ToList())
+			{
+				if (this.PerClientCropPresetIds.ContainsKey(entry.Key) || entry.Value?.IsValid != true)
+				{
+					continue;
+				}
+
+				CropPreset matchingPreset = this.CropPresets.Values.FirstOrDefault(
+					preset => preset?.Region?.IsValid == true && RegionsEqual(preset.Region, entry.Value));
+				if (matchingPreset == null)
+				{
+					string name;
+					do
+					{
+						name = $"Imported crop {importedIndex++}";
+					}
+					while (this.CropPresets.Values.Any(preset =>
+						string.Equals(preset?.Name, name, StringComparison.OrdinalIgnoreCase)));
+
+					matchingPreset = CropPreset.Create(name, CloneRegion(entry.Value));
+					this.CropPresets[matchingPreset.Id] = matchingPreset;
+				}
+
+				this.PerClientCropPresetIds[entry.Key] = matchingPreset.Id;
+			}
+		}
+
+		private static CropRegion CloneRegion(CropRegion region)
+		{
+			return new CropRegion(region.X, region.Y, region.Width, region.Height);
+		}
+
+		private static bool RegionsEqual(CropRegion first, CropRegion second)
+		{
+			const double tolerance = 0.000001;
+			return Math.Abs(first.X - second.X) <= tolerance &&
+				Math.Abs(first.Y - second.Y) <= tolerance &&
+				Math.Abs(first.Width - second.Width) <= tolerance &&
+				Math.Abs(first.Height - second.Height) <= tolerance;
+		}
+
+		private static void AddKeys<TValue>(HashSet<string> clients, IDictionary<string, TValue> source)
+		{
+			if (source == null)
+			{
+				return;
+			}
+
+			foreach (string client in source.Keys.Where(key => !string.IsNullOrWhiteSpace(key)))
+			{
+				clients.Add(client);
+			}
 		}
 
 		private static int ApplyRestrictions(int value, int minimum, int maximum)

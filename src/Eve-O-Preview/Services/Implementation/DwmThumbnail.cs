@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
 using EveOPreview.Services.Interop;
 
@@ -22,9 +23,9 @@ namespace EveOPreview.Services.Implementation
 		{
 			this._properties = new DWM_THUMBNAIL_PROPERTIES();
 			this._properties.dwFlags = DWM_TNP_CONSTANTS.DWM_TNP_VISIBLE
-									  + DWM_TNP_CONSTANTS.DWM_TNP_OPACITY
-									  + DWM_TNP_CONSTANTS.DWM_TNP_RECTDESTINATION
-									  + DWM_TNP_CONSTANTS.DWM_TNP_SOURCECLIENTAREAONLY;
+									  | DWM_TNP_CONSTANTS.DWM_TNP_OPACITY
+									  | DWM_TNP_CONSTANTS.DWM_TNP_RECTDESTINATION
+									  | DWM_TNP_CONSTANTS.DWM_TNP_SOURCECLIENTAREAONLY;
 			this._properties.opacity = 255;
 			this._properties.fVisible = true;
 			this._properties.fSourceClientAreaOnly = true;
@@ -77,6 +78,49 @@ namespace EveOPreview.Services.Implementation
 		public void Move(int left, int top, int right, int bottom)
 		{
 			this._properties.rcDestination = new RECT(left, top, right, bottom);
+		}
+
+		public void SetSourceRegion(RectangleF? normalizedRegion)
+		{
+			this._properties.dwFlags &= ~DWM_TNP_CONSTANTS.DWM_TNP_RECTSOURCE;
+
+			if (!normalizedRegion.HasValue || this._handle == IntPtr.Zero)
+			{
+				return;
+			}
+
+			RectangleF region = normalizedRegion.Value;
+			if (region.X < 0.0f || region.Y < 0.0f ||
+				region.Width <= 0.0f || region.Height <= 0.0f ||
+				region.Right > 1.0f || region.Bottom > 1.0f)
+			{
+				return;
+			}
+
+			try
+			{
+				DwmNativeMethods.DwmQueryThumbnailSourceSize(this._handle, out Size sourceSize);
+				if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+				{
+					return;
+				}
+
+				int left = Math.Clamp((int)Math.Floor(region.Left * sourceSize.Width), 0, sourceSize.Width - 1);
+				int top = Math.Clamp((int)Math.Floor(region.Top * sourceSize.Height), 0, sourceSize.Height - 1);
+				int right = Math.Clamp((int)Math.Ceiling(region.Right * sourceSize.Width), left + 1, sourceSize.Width);
+				int bottom = Math.Clamp((int)Math.Ceiling(region.Bottom * sourceSize.Height), top + 1, sourceSize.Height);
+
+				this._properties.rcSource = new RECT(left, top, right, bottom);
+				this._properties.dwFlags |= DWM_TNP_CONSTANTS.DWM_TNP_RECTSOURCE;
+			}
+			catch (ArgumentException)
+			{
+				// Source window disappeared while the crop was being applied.
+			}
+			catch (COMException)
+			{
+				// DWM became unavailable.
+			}
 		}
 
 		public void Update()

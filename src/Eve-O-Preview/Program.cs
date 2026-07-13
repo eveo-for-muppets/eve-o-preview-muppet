@@ -84,6 +84,7 @@ namespace EveOPreview
 			// Low-level services
 			container.Register<IWindowManager>();
 			container.Register<IProcessMonitor>();
+			container.Register<ICharacterLocationTracker>();
 
 			// MediatR
 			container.Register<IMediator, MediatR.Mediator>();

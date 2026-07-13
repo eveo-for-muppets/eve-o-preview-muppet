@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Drawing;
 
 namespace EveOPreview.Services
 {
@@ -8,6 +9,7 @@ namespace EveOPreview.Services
 		void Unregister();
 
 		void Move(int left, int top, int right, int bottom);
+		void SetSourceRegion(RectangleF? normalizedRegion);
 		void Update();
 	}
 }

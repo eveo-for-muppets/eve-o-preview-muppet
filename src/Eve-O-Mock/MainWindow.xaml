@@ -3,8 +3,25 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Mock " Height="480" Width="640">
     <Grid x:Name="grid">
-        <Grid.Background>
-            <SolidColorBrush Color="{Binding Background.Color, ElementName=grid}"/>
-        </Grid.Background>
+        <Grid.RowDefinitions>
+            <RowDefinition/>
+            <RowDefinition/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition/>
+            <ColumnDefinition/>
+        </Grid.ColumnDefinitions>
+        <Border Grid.Row="0" Grid.Column="0" Background="#C0392B">
+            <TextBlock Text="TOP LEFT" Foreground="White" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <Border Grid.Row="0" Grid.Column="1" Background="#2980B9">
+            <TextBlock Text="TOP RIGHT" Foreground="White" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <Border Grid.Row="1" Grid.Column="0" Background="#27AE60">
+            <TextBlock Text="BOTTOM LEFT" Foreground="White" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <Border Grid.Row="1" Grid.Column="1" Background="#8E44AD">
+            <TextBlock Text="BOTTOM RIGHT" Foreground="White" FontSize="30" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
     </Grid>
 </Window>

@@ -47,14 +47,16 @@ namespace EveOPreview.View
 		private Lazy<Color> _preventPreviewColor;
 		private Lazy<bool> _preventPreviews;
 		private IThumbnailManager _thumbnailManager;
+		private readonly ICharacterLocationTracker _characterLocationTracker;
 		#endregion
 
-		protected ThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager)
+		protected ThumbnailView(IWindowManager windowManager, IThumbnailConfiguration config, IThumbnailManager thumbnailManager, ICharacterLocationTracker characterLocationTracker)
 		{
 			this._config = config;
 			this.SuppressResizeEvent();
 
 			this.WindowManager = windowManager;
+			this._characterLocationTracker = characterLocationTracker;
 
 			this.IsActive = false;
 
@@ -506,6 +508,11 @@ namespace EveOPreview.View
 			this._overlay.Size = overlaySize;
 
 			this._overlay.SetPropertiesOverlayLabel(_config.OverlayLabelFont, _config.OverlayLabelColor, _config.OverlayLabelAnchor);
+			this._overlay.SetSolarSystemLabel(
+				_config.ShowSolarSystemOverlay ? this._characterLocationTracker.GetSolarSystem(this.Title) : null,
+				_config.OverlayLabelFont,
+				Color.WhiteSmoke,
+				_config.OverlayLabelAnchor);
 
 			this._overlay.Location = overlayLocation;
 			this._overlay.Refresh();

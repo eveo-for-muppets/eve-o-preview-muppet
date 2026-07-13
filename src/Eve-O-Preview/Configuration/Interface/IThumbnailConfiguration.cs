@@ -33,6 +33,11 @@ namespace EveOPreview.Configuration
 		Dictionary<string, string> PerClientAliases { get; set; }
 		Dictionary<string, bool> PerClientPreventPreviews { get; set; }
 		Dictionary<string, Size> PerClientThumbnailSize { get; set; }
+		Dictionary<string, CropRegion> PerClientCropRegions { get; set; }
+		Dictionary<string, CropPreset> CropPresets { get; set; }
+		Dictionary<string, string> PerClientCropPresetIds { get; set; }
+		Dictionary<string, string> PerClientSolarSystems { get; set; }
+		Dictionary<string, SolarSystemObservation> PerClientSolarSystemObservations { get; set; }
 		Dictionary<string, bool> CycleGroupExclusions { get; set; }
 
 		bool MinimizeToTray { get; set; }
@@ -68,6 +73,7 @@ namespace EveOPreview.Configuration
 		ZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		bool ShowThumbnailOverlays { get; set; }
+		bool ShowSolarSystemOverlay { get; set; }
 		bool ShowThumbnailFrames { get; set; }
 		bool LockThumbnailLocation { get; set; }
 		bool ThumbnailSnapToGrid {  get; set; }
@@ -90,6 +96,17 @@ namespace EveOPreview.Configuration
 		Point GetThumbnailLocation(string currentClient, string activeClient, Point defaultLocation);
 		Size GetThumbnailSize(string currentClient, string activeClient, Size defaultSize);
 		ZoomAnchor GetZoomAnchor(string currentClient, ZoomAnchor defaultZoomAnchor);
+		CropRegion GetCropRegion(string currentClient);
+		CropPreset GetCropPreset(string presetId);
+		CropPreset GetCropPresetForClient(string currentClient);
+		string CreateCropPreset(string name, CropRegion cropRegion);
+		bool RenameCropPreset(string presetId, string name);
+		IList<string> DeleteCropPreset(string presetId);
+		IList<string> UpdateCropPresetRegion(string presetId, CropRegion cropRegion);
+		void AssignCropPreset(string currentClient, string presetId);
+		void UnassignCropPreset(string currentClient);
+		void SetCropRegion(string currentClient, CropRegion cropRegion);
+		void RemoveCropRegion(string currentClient);
 		void SetThumbnailLocation(string currentClient, string activeClient, Point location);
 
 		ClientLayout GetClientLayout(string currentClient);

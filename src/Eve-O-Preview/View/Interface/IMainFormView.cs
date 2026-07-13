@@ -35,6 +35,7 @@ namespace EveOPreview.View
 		ViewZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		bool ShowThumbnailOverlays { get; set; }
+		bool ShowSolarSystemOverlay { get; set; }
 		bool ShowThumbnailFrames { get; set; }
 
 		bool LockThumbnailLocation { get; set; }
@@ -58,6 +59,18 @@ namespace EveOPreview.View
 		IList<string> GetSelectedClientsForCurrentGroup();
 		void SetSelectedClientsForCurrentGroup(IList<string> orderedClients);
 
+		string SelectedCropPresetId { get; }
+		bool HasPendingCropAssignments { get; }
+		void SetCropPresets(IList<CropPreset> presets, string selectedPresetId);
+		void SetCropPresetRegion(CropRegion region);
+		void SetCropSourceClients(IList<string> clients);
+		void SetCropClients(
+			IList<string> clients,
+			IDictionary<string, string> currentPresetNames,
+			ISet<string> openClients,
+			ISet<string> checkedClients);
+		void SelectCropClients(IList<string> clients, bool onlyOpen);
+
 		void SetDocumentationUrl(string url);
 		void SetVersionInfo(string version);
 		void SetThumbnailSizeLimitations(Size minimumSize, Size maximumSize);
@@ -78,6 +91,16 @@ namespace EveOPreview.View
 		Action ApplicationSettingsChanged { get; set; }
 		Action ThumbnailsSizeChanged { get; set; }
 		Action<string> ThumbnailStateChanged { get; set; }
+		Action<string> CropRegionSelectionRequested { get; set; }
+		Action<string> CropRegionResetRequested { get; set; }
+		Action<string> CropPresetSelected { get; set; }
+		Action<string> CropPresetCreateRequested { get; set; }
+		Action<string, string> CropPresetRenameRequested { get; set; }
+		Action<string> CropPresetDeleteRequested { get; set; }
+		Action<string, string> CropPresetSelectAreaRequested { get; set; }
+		Func<string, IList<string>, bool> CropAssignmentsApplyRequested { get; set; }
+		Action<int, bool> CropCycleGroupSelectRequested { get; set; }
+		Func<string, int, bool, bool, bool> CropCycleGroupAssignRequested { get; set; }
 		Action DocumentationLinkActivated { get; set; }
 		void InitializeLanguageControls();
 

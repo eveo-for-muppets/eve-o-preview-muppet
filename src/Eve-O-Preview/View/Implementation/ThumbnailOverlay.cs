@@ -18,6 +18,10 @@ namespace EveOPreview.View
 		private readonly Action<object, MouseEventArgs> _areaMouseUpAction;
 		private readonly Action<object, MouseEventArgs> _areaMouseMoveAction;
 		private bool _showOverlayText = true;
+		private string _solarSystemText;
+		private Font _solarSystemFont;
+		private Color _solarSystemColor;
+		private ZoomAnchor _characterLabelAnchor;
 		#endregion
 
 		public ThumbnailOverlay(Form owner,
@@ -62,6 +66,14 @@ namespace EveOPreview.View
 		public void SetOverlayLabel(string label)
 		{
 			this.OverlayLabel.Text = label;
+		}
+
+		public void SetSolarSystemLabel(string solarSystem, Font font, Color color, ZoomAnchor characterLabelAnchor)
+		{
+			this._solarSystemText = solarSystem?.Trim();
+			this._solarSystemFont = font;
+			this._solarSystemColor = color;
+			this._characterLabelAnchor = characterLabelAnchor;
 		}
 		public void SetCycleGroupIndicator(bool displayCycleGroup, ZoomAnchor anchor)
 		{
@@ -248,7 +260,44 @@ namespace EveOPreview.View
 
 		private void OverlayAreaPictureBox_Paint(object sender, PaintEventArgs e)
 		{
-			if (this._showOverlayText) PaintDrawText(e, OverlayLabel);
+			if (!this._showOverlayText)
+			{
+				return;
+			}
+
+			PaintDrawText(e, OverlayLabel);
+			this.PaintSolarSystem(e);
+		}
+
+		private void PaintSolarSystem(PaintEventArgs e)
+		{
+			if (string.IsNullOrWhiteSpace(this._solarSystemText) || this._solarSystemFont == null)
+			{
+				return;
+			}
+
+			const int margin = 5;
+			TextFormatFlags flags = TextFormatFlags.HorizontalCenter |
+				TextFormatFlags.VerticalCenter |
+				TextFormatFlags.SingleLine |
+				TextFormatFlags.EndEllipsis |
+				TextFormatFlags.NoPadding |
+				TextFormatFlags.NoPrefix;
+			Size measured = TextRenderer.MeasureText(e.Graphics, this._solarSystemText, this._solarSystemFont, Size.Empty, flags);
+			// TextRenderer can underestimate the final glyph bounds by a pixel or two
+			// under DPI scaling. Extra vertical room prevents the baseline being clipped.
+			int height = Math.Max(1, measured.Height + 4);
+			bool characterLabelIsAtBottom = this._characterLabelAnchor == ZoomAnchor.SW ||
+				this._characterLabelAnchor == ZoomAnchor.S ||
+				this._characterLabelAnchor == ZoomAnchor.SE;
+			int canvasWidth = this.OverlayAreaPictureBox.ClientSize.Width;
+			int canvasHeight = this.OverlayAreaPictureBox.ClientSize.Height;
+			int top = characterLabelIsAtBottom ? margin : Math.Max(margin, canvasHeight - height - margin);
+			Rectangle textRectangle = new Rectangle(margin, top, Math.Max(1, canvasWidth - (margin * 2)), height);
+			Rectangle shadowRectangle = textRectangle;
+			shadowRectangle.Offset(1, 1);
+			TextRenderer.DrawText(e.Graphics, this._solarSystemText, this._solarSystemFont, shadowRectangle, Color.Black, flags);
+			TextRenderer.DrawText(e.Graphics, this._solarSystemText, this._solarSystemFont, textRectangle, this._solarSystemColor, flags);
 		}
 
 		protected override CreateParams CreateParams

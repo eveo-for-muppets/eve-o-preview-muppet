@@ -29,6 +29,7 @@ namespace EveOPreview.Configuration.Implementation
 			}
 
 			string rawData = File.ReadAllText(filename);
+			this.BackUpPrePersonalConfiguration(filename, rawData);
 
 			JsonSerializerSettings jsonSerializerSettings = new JsonSerializerSettings()
 			{
@@ -41,6 +42,37 @@ namespace EveOPreview.Configuration.Implementation
 
 			// Validate data after loading it
 			this._thumbnailConfiguration.ApplyRestrictions();
+		}
+
+		private void BackUpPrePersonalConfiguration(string filename, string rawData)
+		{
+			if (rawData.IndexOf("\"PerClientSolarSystems\"", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+				rawData.IndexOf("\"CropPresets\"", System.StringComparison.OrdinalIgnoreCase) >= 0)
+			{
+				return;
+			}
+
+			string directory = Path.GetDirectoryName(Path.GetFullPath(filename));
+			string extension = Path.GetExtension(filename);
+			string name = Path.GetFileNameWithoutExtension(filename);
+			string backup = Path.Combine(directory, $"{name}.before-personal-features{extension}");
+			if (File.Exists(backup))
+			{
+				return;
+			}
+
+			try
+			{
+				File.Copy(filename, backup, overwrite: false);
+			}
+			catch (IOException)
+			{
+				// A backup failure must not prevent EVE-O from starting.
+			}
+			catch (System.UnauthorizedAccessException)
+			{
+				// A read-only directory must not prevent EVE-O from starting.
+			}
 		}
 
 		public void Save()
