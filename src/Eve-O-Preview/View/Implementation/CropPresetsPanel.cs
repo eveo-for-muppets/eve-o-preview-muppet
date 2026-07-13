@@ -574,6 +574,19 @@ namespace EveOPreview.View
 			{
 				return true;
 			}
+			if (string.IsNullOrWhiteSpace(this.SelectedPresetId))
+			{
+				// There is nothing to apply until a preset exists. This can happen when
+				// characters are checked before the first preset is created.
+				this._assignmentsDirty = false;
+				this._applyButton.Enabled = false;
+				foreach (ClientRow row in this._clientRows)
+				{
+					row.IsChecked = false;
+				}
+				this.RebuildClientList();
+				return true;
+			}
 
 			DialogResult result = MessageBox.Show(
 				this,

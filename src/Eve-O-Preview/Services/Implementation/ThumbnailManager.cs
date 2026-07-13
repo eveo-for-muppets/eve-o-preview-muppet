@@ -383,6 +383,10 @@ namespace EveOPreview.Services
 
 		public void Start()
 		{
+			// The manager is constructed before ConfigurationStorage loads the user's
+			// JSON. Replace handlers that captured the built-in example groups with
+			// handlers backed by the loaded hotkeys and client order.
+			this.ReloadCycleClientHotkeys();
 			this._characterLocationTracker.Start();
 			this._thumbnailUpdateTimer.Start();
 
