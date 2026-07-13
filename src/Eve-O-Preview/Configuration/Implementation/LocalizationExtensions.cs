@@ -3,11 +3,12 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls.Primitives;
 using System.Windows.Forms;
-using System.Windows.Shapes;
 
 
 namespace EveOPreview.Configuration.Implementation
@@ -30,18 +31,86 @@ namespace EveOPreview.Configuration.Implementation
 		private static void InitializeLocalizations()
 		{
 			_localizations = new Dictionary<string, Dictionary<string, string>>();
-			if (!File.Exists(LOCALIZATION_FILENAME))
+			MergeLocalizationData(ReadEmbeddedLocalizationData());
+			// A sidecar file remains editable and overrides bundled strings, but
+			// missing newer keys continue to fall back to the embedded translations.
+			MergeLocalizationData(TryReadExternalLocalizationData());
+
+			if (!_localizations.ContainsKey("en-US"))
+			{
+				_localizations["en-US"] = new Dictionary<string, string>();
+			}
+		}
+
+		private static void MergeLocalizationData(string rawData)
+		{
+			if (string.IsNullOrWhiteSpace(rawData))
 			{
 				return;
 			}
 
-			string rawData = File.ReadAllText(LOCALIZATION_FILENAME);
-			JsonSerializerSettings jsonSerializerSettings = new JsonSerializerSettings()
+			try
 			{
-				ObjectCreationHandling = ObjectCreationHandling.Replace
-			};
+				Dictionary<string, Dictionary<string, string>> loaded =
+					JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, string>>>(rawData);
+				foreach (KeyValuePair<string, Dictionary<string, string>> language in
+					loaded ?? new Dictionary<string, Dictionary<string, string>>())
+				{
+					if (!_localizations.TryGetValue(language.Key, out Dictionary<string, string> strings))
+					{
+						strings = new Dictionary<string, string>();
+						_localizations[language.Key] = strings;
+					}
+					foreach (KeyValuePair<string, string> entry in
+						language.Value ?? new Dictionary<string, string>())
+					{
+						strings[entry.Key] = entry.Value;
+					}
+				}
+			}
+			catch (JsonException)
+			{
+				// A damaged optional sidecar must not prevent startup or discard the
+				// valid translations already loaded from the executable.
+			}
+		}
 
-			JsonConvert.PopulateObject(rawData, _localizations, jsonSerializerSettings);
+		private static string TryReadExternalLocalizationData()
+		{
+			string[] candidates =
+			{
+				System.IO.Path.Combine(AppContext.BaseDirectory, LOCALIZATION_FILENAME),
+				System.IO.Path.GetFullPath(LOCALIZATION_FILENAME)
+			};
+			foreach (string filename in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+			{
+				try
+				{
+					if (File.Exists(filename))
+					{
+						return File.ReadAllText(filename);
+					}
+				}
+				catch (IOException)
+				{
+				}
+				catch (UnauthorizedAccessException)
+				{
+				}
+			}
+			return null;
+		}
+
+		private static string ReadEmbeddedLocalizationData()
+		{
+			using Stream resource = Assembly.GetExecutingAssembly()
+				.GetManifestResourceStream("EveOPreview.EVE-O-Preview.locale");
+			if (resource == null)
+			{
+				return null;
+			}
+			using StreamReader reader = new StreamReader(resource);
+			return reader.ReadToEnd();
 		}
 
 		public static void ApplyLocalization(this Form form)
@@ -90,6 +159,7 @@ namespace EveOPreview.Configuration.Implementation
 
 			if (control is GroupBox groupBox)
 			{
+				groupBox.Text = GetString($"{path}.{groupBox.Name}", groupBox.Text);
 				// Recursively apply localization to child controls for GroupBox
 				foreach (Control child in groupBox.Controls)
 				{
@@ -215,7 +285,7 @@ namespace EveOPreview.Configuration.Implementation
 
 		public static void SetLanguage(string languageCode)
 		{
-			if (_localizations.ContainsKey(languageCode))
+			if (!string.IsNullOrWhiteSpace(languageCode) && _localizations.ContainsKey(languageCode))
 			{
 				_currentLanguage = languageCode;
 				//Thread.CurrentThread.CurrentUICulture = new CultureInfo(languageCode);
@@ -244,12 +314,9 @@ namespace EveOPreview.Configuration.Implementation
 
 		public static List<string> GetLanguages()
 		{
-			 List<string> configuredLanguages = new List<string>();
-			foreach(var l in _localizations )
-			{
-				configuredLanguages.Add(l.Key);
-			}
-			return configuredLanguages;
+			return _localizations.Keys
+				.OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+				.ToList();
 		}
 	}
 }

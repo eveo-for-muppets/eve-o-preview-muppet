@@ -32,6 +32,7 @@ namespace EveOPreview.View
 		int ThumbnailZoomFactor { get; set; }
 		ViewZoomAnchor ThumbnailZoomAnchor { get; set; }
 		ViewZoomAnchor OverlayLabelAnchor { get; set; }
+		ViewZoomAnchor SolarSystemLabelAnchor { get; set; }
 		ViewZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		bool ShowThumbnailOverlays { get; set; }
@@ -48,10 +49,13 @@ namespace EveOPreview.View
 		Color PreventPreviewColor { get; set; }
 		Color OverlayLabelColor { get; set; }
 		Font OverlayLabelFont { get; set; }
+		Color SolarSystemLabelColor { get; set; }
+		Font SolarSystemLabelFont { get; set; }
 
 		string IconName { get; set; }
 
 		int SelectedCycleGroup { get; set; } // 1..5
+		bool SelectedCycleGroupIsTemporary { get; set; }
 		string CycleGroupForwardHotkeysText { get; set; }
 		string CycleGroupBackwardHotkeysText { get; set; }
 
@@ -83,24 +87,22 @@ namespace EveOPreview.View
 
 		Action ApplicationExitRequested { get; set; }
 		Action<string> LoadNewSettings { get; set; }
-		Action SaveSettings { get; set; }
-
 		Action FormActivated { get; set; }
 		Action FormMinimized { get; set; }
 		Action<ViewCloseRequest> FormCloseRequested { get; set; }
 		Action ApplicationSettingsChanged { get; set; }
 		Action ThumbnailsSizeChanged { get; set; }
 		Action<string> ThumbnailStateChanged { get; set; }
-		Action<string> CropRegionSelectionRequested { get; set; }
-		Action<string> CropRegionResetRequested { get; set; }
 		Action<string> CropPresetSelected { get; set; }
-		Action<string> CropPresetCreateRequested { get; set; }
+		Action<string, string> CropPresetCreateRequested { get; set; }
 		Action<string, string> CropPresetRenameRequested { get; set; }
 		Action<string> CropPresetDeleteRequested { get; set; }
 		Action<string, string> CropPresetSelectAreaRequested { get; set; }
 		Func<string, IList<string>, bool> CropAssignmentsApplyRequested { get; set; }
 		Action<int, bool> CropCycleGroupSelectRequested { get; set; }
 		Func<string, int, bool, bool, bool> CropCycleGroupAssignRequested { get; set; }
+		Func<int, bool> CropCycleGroupClearRequested { get; set; }
+		Func<string, int, bool> CropTemporaryCycleGroupAssignRequested { get; set; }
 		Action DocumentationLinkActivated { get; set; }
 		void InitializeLanguageControls();
 

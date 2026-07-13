@@ -1662,10 +1662,10 @@ namespace EveOPreview.View
 			BackColor = SystemColors.Control;
 			ClientSize = new Size(704, 480);
 			Controls.Add(ContentTabControl);
-			FormBorderStyle = FormBorderStyle.FixedSingle;
+			FormBorderStyle = FormBorderStyle.Sizable;
 			Icon = (Icon)resources.GetObject("$this.Icon");
 			Margin = new Padding(0);
-			MaximizeBox = false;
+			MaximizeBox = true;
 			Name = "MainForm";
 			Text = "EVE-O-Preview";
 			TopMost = true;

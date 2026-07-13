@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Threading;
 using System.Windows.Forms;
 using EveOPreview.Configuration;
+using EveOPreview.Configuration.Implementation;
 using EveOPreview.Services;
 
 namespace EveOPreview.View
@@ -25,8 +26,10 @@ namespace EveOPreview.View
 			this._windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
 			this._sourceHandle = sourceHandle;
 
-			this.Text = $"Select crop region - {clientTitle}";
-			this.StartPosition = FormStartPosition.CenterScreen;
+			this.Text = string.Format(
+				this.Localize("TitleFormat", "Select crop region - {0}"),
+				clientTitle);
+			this.StartPosition = FormStartPosition.CenterParent;
 			this.Size = new Size(1000, 700);
 			this.MinimumSize = new Size(640, 480);
 			this.FormBorderStyle = FormBorderStyle.Sizable;
@@ -40,7 +43,7 @@ namespace EveOPreview.View
 				Dock = DockStyle.Top,
 				Height = 42,
 				Padding = new Padding(10, 8, 10, 4),
-				Text = "Drag over the part of this client that its thumbnail should display.",
+				Text = this.Localize("Instructions", "Drag over the part of this client that its thumbnail should display."),
 				TextAlign = ContentAlignment.MiddleLeft
 			};
 
@@ -61,7 +64,7 @@ namespace EveOPreview.View
 
 			Button applyButton = new Button
 			{
-				Text = "Apply crop",
+				Text = this.Localize("ApplyButton", "Apply crop"),
 				AutoSize = true,
 				Height = 34
 			};
@@ -69,7 +72,7 @@ namespace EveOPreview.View
 
 			Button cancelButton = new Button
 			{
-				Text = "Cancel",
+				Text = this.Localize("CancelButton", "Cancel"),
 				AutoSize = true,
 				Height = 34,
 				DialogResult = DialogResult.Cancel
@@ -176,8 +179,8 @@ namespace EveOPreview.View
 			{
 				MessageBox.Show(
 					this,
-					"Drag a crop rectangle over the client image first.",
-					"No crop selected",
+					this.Localize("NoCropMessage", "Drag a crop rectangle over the client image first."),
+					this.Localize("NoCropTitle", "No crop selected"),
 					MessageBoxButtons.OK,
 					MessageBoxIcon.Information);
 				return;
@@ -185,6 +188,11 @@ namespace EveOPreview.View
 
 			this.DialogResult = DialogResult.OK;
 			this.Close();
+		}
+
+		private string Localize(string key, string fallback)
+		{
+			return LocalizationExtensions.GetString($"CropRegionSelector.{key}", fallback);
 		}
 	}
 }

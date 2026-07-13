@@ -4,6 +4,8 @@ namespace EveOPreview.Services
 	{
 		void Start();
 		void Stop();
+		void ReloadConfiguration();
+		void FlushToConfiguration();
 		string GetSolarSystem(string clientTitle);
 	}
 }

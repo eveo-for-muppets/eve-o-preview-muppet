@@ -36,6 +36,7 @@ namespace EveOPreview.Services
 		private readonly IThumbnailConfiguration _configuration;
 		private readonly ICharacterLocationTracker _characterLocationTracker;
 		private readonly DispatcherTimer _thumbnailUpdateTimer;
+		private readonly DispatcherTimer _thumbnailSizeSaveTimer;
 		private readonly IThumbnailViewFactory _thumbnailViewFactory;
 		private readonly Dictionary<IntPtr, IThumbnailView> _thumbnailViews;
 
@@ -52,7 +53,11 @@ namespace EveOPreview.Services
 		private int _hideThumbnailsDelay;
 
 		private List<HotkeyHandler> _cycleClientHotkeyHandlers = new List<HotkeyHandler>();
+		private readonly object _temporaryCycleGroupsSyncRoot;
+		private readonly Dictionary<int, List<string>> _temporaryCycleGroups;
 		#endregion
+
+		public event Action TemporaryCycleGroupsChanged;
 
 		public ThumbnailManager(IMediator mediator, IThumbnailConfiguration configuration, IProcessMonitor processMonitor, IWindowManager windowManager, IThumbnailViewFactory factory, ICharacterLocationTracker characterLocationTracker)
 		{
@@ -73,11 +78,22 @@ namespace EveOPreview.Services
 			this._enqueuedLocationChangeNotification = (IntPtr.Zero, null, null, Point.Empty, -1);
 
 			this._thumbnailViews = new Dictionary<IntPtr, IThumbnailView>();
+			this._temporaryCycleGroupsSyncRoot = new object();
+			this._temporaryCycleGroups = new Dictionary<int, List<string>>();
+			for (int group = 1; group <= 5; group++)
+			{
+				this._temporaryCycleGroups[group] = new List<string>();
+			}
 
 			//  DispatcherTimer setup
 			this._thumbnailUpdateTimer = new DispatcherTimer();
 			this._thumbnailUpdateTimer.Tick += ThumbnailUpdateTimerTick;
 			this._thumbnailUpdateTimer.Interval = new TimeSpan(0, 0, 0, 0, configuration.ThumbnailRefreshPeriod);
+			this._thumbnailSizeSaveTimer = new DispatcherTimer
+			{
+				Interval = TimeSpan.FromMilliseconds(750)
+			};
+			this._thumbnailSizeSaveTimer.Tick += this.ThumbnailSizeSaveTimerTick;
 
 			this._hideThumbnailsDelay = this._configuration.HideThumbnailsDelay;
 
@@ -96,6 +112,14 @@ namespace EveOPreview.Services
 			RegisterCycleClientHotkey(this._configuration.CycleGroup5ForwardHotkeys?.Select(x => this._configuration.StringToKey(x)), true, this._configuration.CycleGroup5ClientsOrder);
 			RegisterCycleClientHotkey(this._configuration.CycleGroup5BackwardHotkeys?.Select(x => this._configuration.StringToKey(x)), false, this._configuration.CycleGroup5ClientsOrder);
 
+			for (int group = 1; group <= 5; group++)
+			{
+				List<string> forwardHotkeys = GetTemporaryHotkeys(this._configuration.TemporaryCycleGroupForwardHotkeys, group);
+				List<string> backwardHotkeys = GetTemporaryHotkeys(this._configuration.TemporaryCycleGroupBackwardHotkeys, group);
+				RegisterCycleClientHotkey(forwardHotkeys.Select(this._configuration.StringToKey), true, null, group);
+				RegisterCycleClientHotkey(backwardHotkeys.Select(this._configuration.StringToKey), false, null, group);
+			}
+
 			RegisterMinimizeAllClientsHotkey(this._configuration.MinimizeAllClientsHotkeys?.Select(x => this._configuration.StringToKey(x)));
 			RegisterRefreshMinimizedClientsHotkey(this._configuration.RefreshMinimizedClientsHotkeys?.Select(x => this._configuration.StringToKey(x)));
 		}
@@ -113,6 +137,83 @@ namespace EveOPreview.Services
 		public IThumbnailView GetActiveClient()
 		{
 			return GetClientByPointer(this._activeClient.Handle);
+		}
+
+		public int? GetTemporaryCycleGroupForClient(string title)
+		{
+			if (string.IsNullOrWhiteSpace(title))
+			{
+				return null;
+			}
+			lock (this._temporaryCycleGroupsSyncRoot)
+			{
+				foreach (KeyValuePair<int, List<string>> group in this._temporaryCycleGroups)
+				{
+					if (group.Value.Contains(title, StringComparer.OrdinalIgnoreCase))
+					{
+						return group.Key;
+					}
+				}
+			}
+			return null;
+		}
+
+		public IList<string> GetTemporaryCycleGroupClients(int group)
+		{
+			if (group < 1 || group > 5)
+			{
+				return new List<string>();
+			}
+			lock (this._temporaryCycleGroupsSyncRoot)
+			{
+				return this._temporaryCycleGroups[group].ToList();
+			}
+		}
+
+		public void SetTemporaryCycleGroupClients(int group, IList<string> orderedClients)
+		{
+			if (group < 1 || group > 5)
+			{
+				return;
+			}
+			List<string> desired = (orderedClients ?? new List<string>())
+				.Where(title => !string.IsNullOrWhiteSpace(title))
+				.Where(title => !string.Equals(title, DEFAULT_CLIENT_TITLE, StringComparison.OrdinalIgnoreCase))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
+			bool changed;
+			lock (this._temporaryCycleGroupsSyncRoot)
+			{
+				List<string> before = this._temporaryCycleGroups[group].ToList();
+				foreach (List<string> members in this._temporaryCycleGroups.Values)
+				{
+					members.RemoveAll(title => desired.Contains(title, StringComparer.OrdinalIgnoreCase));
+				}
+				this._temporaryCycleGroups[group] = desired;
+				changed = !before.SequenceEqual(desired, StringComparer.OrdinalIgnoreCase);
+			}
+			if (changed)
+			{
+				this.RefreshTemporaryCycleGroupState();
+			}
+		}
+
+		public void ClearTemporaryCycleGroup(int group)
+		{
+			if (group < 1 || group > 5)
+			{
+				return;
+			}
+			bool changed;
+			lock (this._temporaryCycleGroupsSyncRoot)
+			{
+				changed = this._temporaryCycleGroups[group].Count > 0;
+				this._temporaryCycleGroups[group].Clear();
+			}
+			if (changed)
+			{
+				this.RefreshTemporaryCycleGroupState();
+			}
 		}
 		public void SetActive(KeyValuePair<IntPtr, IThumbnailView> newClient)
 		{
@@ -217,112 +318,75 @@ namespace EveOPreview.Services
 			}
 		}
 
-		public void CycleNextClient(bool isForwards, Dictionary<string, int> cycleOrder)
+		public void CycleNextClient(
+			bool isForwards,
+			Dictionary<string, int> cycleOrder,
+			int? temporaryGroup = null)
 		{
-			IOrderedEnumerable<KeyValuePair<string, int>> clientOrder;
-			Dictionary<string, int> _cycleOrder = new Dictionary<string, int>(cycleOrder);
-
-			if ( _cycleOrder.Count == 0 ) 
+			Dictionary<string, int> effectiveOrder = new Dictionary<string, int>(
+				cycleOrder ?? new Dictionary<string, int>(),
+				StringComparer.OrdinalIgnoreCase);
+			if (effectiveOrder.Count == 0)
 			{
+				// An empty saved group historically means all clients. An empty temporary
+				// group intentionally does nothing.
+				if (temporaryGroup.HasValue)
+				{
+					return;
+				}
 				int order = 0;
-				foreach( var x in _thumbnailViews )
+				foreach (IThumbnailView view in this._thumbnailViews.Values)
 				{
-					if (!_cycleOrder.ContainsKey(x.Value.Title)) {
-						_cycleOrder.Add(x.Value.Title, order++);
-					}
-				}
-			}
-
-			if (isForwards)
-			{
-				clientOrder = _cycleOrder.OrderBy(x => x.Value);
-			}
-			else
-			{
-				clientOrder = _cycleOrder.OrderByDescending(x => x.Value);
-			}
-
-			bool setNextClient = false;
-			IThumbnailView lastClient = null;
-
-			foreach (var t in clientOrder)
-			{
-				if (t.Key == _activeClient.Title && t.Key != DEFAULT_CLIENT_TITLE)
-				{
-					setNextClient = true;
-					lastClient = _thumbnailViews.FirstOrDefault(x => x.Value.Title == t.Key).Value;
-					continue;
-				}
-
-				// cycle through login screens ?
-				if (t.Key == _activeClient.Title && t.Key == DEFAULT_CLIENT_TITLE)
-				{
-					lastClient = _thumbnailViews.FirstOrDefault(x => x.Value.Title == t.Key && x.Value.Id == _activeClient.Handle).Value;
-					if (lastClient == null)
+					if (!effectiveOrder.ContainsKey(view.Title))
 					{
-						setNextClient = true;
-						continue;
+						effectiveOrder[view.Title] = order++;
 					}
-					var possibleClients = (isForwards ? _thumbnailViews.OrderBy(x => x.Value.Id.ToInt64()) : _thumbnailViews.OrderByDescending(x => x.Value.Id.ToInt64())).Where(x => x.Value.Title == t.Key && ! x.Value.IsExcludedFromCycleGroup);
-					foreach (var pc in possibleClients)
-					{
-						if ( pc.Value.Id.Equals(lastClient.Id) )
-						{
-							setNextClient = true;
-							continue;
-						}
-
-						if (!setNextClient)
-						{
-							continue;
-						}
-
-						// this is the next client (at login screen)
-						SetActive(pc);
-						return;
-					}
-
-					// rolled off top of list - back to first (if any there!)
-					// set next client ?
-					continue;
-				}
-
-				if (!setNextClient)
-				{
-					continue;
-				}
-
-				if (_thumbnailViews.Any(x => x.Value.Title == t.Key && !x.Value.IsExcludedFromCycleGroup))
-				{
-					var ptr = t.Key.Equals(DEFAULT_CLIENT_TITLE) ? 
-						(isForwards ? _thumbnailViews.OrderBy(x => x.Value.Id.ToInt64()) : _thumbnailViews.OrderByDescending(x => x.Value.Id.ToInt64())).FirstOrDefault(x => x.Value.Title == t.Key && ! x.Value.IsExcludedFromCycleGroup)
-						: _thumbnailViews.First(x => x.Value.Title == t.Key && !x.Value.IsExcludedFromCycleGroup);
-					SetActive(ptr);
-					return;
 				}
 			}
 
-			// we didn't get a next one. just get the first one from the start.
-			foreach (var t in clientOrder)
+			IEnumerable<KeyValuePair<string, int>> orderedTitles = isForwards
+				? effectiveOrder.OrderBy(entry => entry.Value)
+				: effectiveOrder.OrderByDescending(entry => entry.Value);
+			List<KeyValuePair<IntPtr, IThumbnailView>> candidates = new List<KeyValuePair<IntPtr, IThumbnailView>>();
+			foreach (KeyValuePair<string, int> orderedTitle in orderedTitles)
 			{
-				if (_thumbnailViews.Any(x => x.Value.Title == t.Key && !x.Value.IsExcludedFromCycleGroup))
-				{
-					var ptr = t.Key.Equals(DEFAULT_CLIENT_TITLE) ?
-						(isForwards ? _thumbnailViews.OrderBy(x => x.Value.Id.ToInt64()) : _thumbnailViews.OrderByDescending(x => x.Value.Id.ToInt64())).FirstOrDefault(x => x.Value.Title == t.Key && !x.Value.IsExcludedFromCycleGroup)
-						: _thumbnailViews.First(x => x.Value.Title == t.Key && !x.Value.IsExcludedFromCycleGroup);
-					SetActive(ptr);
-					_activeClient = (ptr.Key, t.Key);
-					return;
-				}
+				IEnumerable<KeyValuePair<IntPtr, IThumbnailView>> matchingViews = this._thumbnailViews
+					.Where(entry => string.Equals(entry.Value.Title, orderedTitle.Key, StringComparison.OrdinalIgnoreCase))
+					.Where(entry => this.IsEligibleForCycle(entry.Value, temporaryGroup));
+				matchingViews = isForwards
+					? matchingViews.OrderBy(entry => entry.Key.ToInt64())
+					: matchingViews.OrderByDescending(entry => entry.Key.ToInt64());
+				candidates.AddRange(matchingViews);
 			}
 
-			// unable to select anything !
-			return;
+			if (candidates.Count == 0)
+			{
+				return;
+			}
+			int currentIndex = candidates.FindIndex(entry => entry.Key == this._activeClient.Handle);
+			int nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % candidates.Count;
+			this.SetActive(candidates[nextIndex]);
 		}
 
-		public void RegisterCycleClientHotkey(IEnumerable<Keys> keys, bool isForwards, Dictionary<string, int> cycleOrder)
+		private bool IsEligibleForCycle(IThumbnailView view, int? temporaryGroup)
 		{
-			foreach (var hotkey in keys)
+			if (view.IsExcludedFromCycleGroup)
+			{
+				return false;
+			}
+			int? assignedTemporaryGroup = this.GetTemporaryCycleGroupForClient(view.Title);
+			return temporaryGroup.HasValue
+				? assignedTemporaryGroup == temporaryGroup
+				: !assignedTemporaryGroup.HasValue;
+		}
+
+		public void RegisterCycleClientHotkey(
+			IEnumerable<Keys> keys,
+			bool isForwards,
+			Dictionary<string, int> cycleOrder,
+			int? temporaryGroup = null)
+		{
+			foreach (var hotkey in keys ?? Enumerable.Empty<Keys>())
 			{
 				if (hotkey == Keys.None)
 				{
@@ -332,7 +396,12 @@ namespace EveOPreview.Services
 				var newHandler = new HotkeyHandler(default(IntPtr), hotkey);
 				newHandler.Pressed += (object s, HandledEventArgs e) =>
 				{
-					this.CycleNextClient(isForwards, cycleOrder);
+					Dictionary<string, int> currentOrder = temporaryGroup.HasValue
+						? this.GetTemporaryCycleGroupClients(temporaryGroup.Value)
+							.Select((title, index) => new { title, index })
+							.ToDictionary(entry => entry.title, entry => entry.index, StringComparer.OrdinalIgnoreCase)
+						: cycleOrder;
+					this.CycleNextClient(isForwards, currentOrder, temporaryGroup);
 					e.Handled = true;
 				};
 
@@ -396,7 +465,14 @@ namespace EveOPreview.Services
 		public void Stop()
 		{
 			this._thumbnailUpdateTimer.Stop();
+			this._thumbnailSizeSaveTimer.Stop();
 			this._characterLocationTracker.Stop();
+		}
+
+		private async void ThumbnailSizeSaveTimerTick(object sender, EventArgs e)
+		{
+			this._thumbnailSizeSaveTimer.Stop();
+			await this._mediator.Send(new SaveConfiguration());
 		}
 
 		private void ThumbnailUpdateTimerTick(object sender, EventArgs e)
@@ -443,6 +519,8 @@ namespace EveOPreview.Services
 				view.ThumbnailDeactivated = this.ThumbnailDeactivated;
 
 				view.ThumbnailToggleCycleGroup = this.ThumbnailToggleCycleGroup;
+				view.ThumbnailToggleTemporaryCycleGroup = this.ThumbnailToggleTemporaryCycleGroup;
+				view.SetTemporaryCycleGroupIndicator(this.GetTemporaryCycleGroupForClient(view.Title));
 
 				view.RegisterHotkey(this._configuration.GetClientHotkey(view.Title));
 
@@ -470,6 +548,7 @@ namespace EveOPreview.Services
 				{
 					viewsRemoved.Add(view.Title);
 					view.Title = process.Title;
+					view.SetTemporaryCycleGroupIndicator(this.GetTemporaryCycleGroupForClient(view.Title));
 					viewsAdded.Add(view.Title);
 
 					view.RegisterHotkey(this._configuration.GetClientHotkey(process.Title));
@@ -497,6 +576,7 @@ namespace EveOPreview.Services
 				view.ThumbnailLostFocus = null;
 				view.ThumbnailActivated = null;
 				view.ThumbnailToggleCycleGroup = null;
+				view.ThumbnailToggleTemporaryCycleGroup = null;
 
 				view.Close();
 			}
@@ -681,6 +761,7 @@ namespace EveOPreview.Services
 			foreach (KeyValuePair<IntPtr, IThumbnailView> entry in this._thumbnailViews)
 			{
 				entry.Value.SetCycleGroupIndicator(entry.Value.IsExcludedFromCycleGroup, anchor);
+				entry.Value.SetTemporaryCycleGroupIndicator(this.GetTemporaryCycleGroupForClient(entry.Value.Title));
 				entry.Value.Refresh(false);
 			}
 
@@ -849,6 +930,45 @@ namespace EveOPreview.Services
 			this.RefreshThumbnails();
 		}
 
+		private void ThumbnailToggleTemporaryCycleGroup(IntPtr id, int group)
+		{
+			IThumbnailView view = this.GetClientByPointer(id);
+			if (view == null || group < 1 || group > 5 ||
+				string.Equals(view.Title, DEFAULT_CLIENT_TITLE, StringComparison.OrdinalIgnoreCase))
+			{
+				return;
+			}
+
+			lock (this._temporaryCycleGroupsSyncRoot)
+			{
+				int? currentGroup = null;
+				foreach (KeyValuePair<int, List<string>> candidate in this._temporaryCycleGroups)
+				{
+					if (candidate.Value.Contains(view.Title, StringComparer.OrdinalIgnoreCase))
+					{
+						currentGroup = candidate.Key;
+					}
+					candidate.Value.RemoveAll(title => string.Equals(title, view.Title, StringComparison.OrdinalIgnoreCase));
+				}
+				if (currentGroup != group)
+				{
+					this._temporaryCycleGroups[group].Add(view.Title);
+				}
+			}
+			this.RefreshTemporaryCycleGroupState();
+		}
+
+		private void RefreshTemporaryCycleGroupState()
+		{
+			foreach (IThumbnailView thumbnail in this._thumbnailViews.Values)
+			{
+				thumbnail.SetTemporaryCycleGroupIndicator(this.GetTemporaryCycleGroupForClient(thumbnail.Title));
+				thumbnail.Refresh(false);
+			}
+			this.TemporaryCycleGroupsChanged?.Invoke();
+			this.RefreshThumbnails();
+		}
+
 
 		private async void ThumbnailViewResized(IntPtr id)
 		{
@@ -858,12 +978,21 @@ namespace EveOPreview.Services
 			}
 
 			IThumbnailView view = this._thumbnailViews[id];
+			Size newSize = view.ThumbnailSize;
+			this._configuration.ThumbnailSize = newSize;
+			this._configuration.PerClientThumbnailSize ??= new Dictionary<string, Size>();
+			foreach (IThumbnailView currentView in this._thumbnailViews.Values.Where(this.IsManageableThumbnail))
+			{
+				this._configuration.PerClientThumbnailSize[currentView.Title] = newSize;
+			}
 
-			this.SetThumbnailsSize(view.ThumbnailSize);
+			this.SetThumbnailsSize(newSize);
 
 			view.Refresh(false);
 
-			await this._mediator.Publish(new ThumbnailActiveSizeUpdated(view.ThumbnailSize));
+			await this._mediator.Publish(new ThumbnailActiveSizeUpdated(newSize));
+			this._thumbnailSizeSaveTimer.Stop();
+			this._thumbnailSizeSaveTimer.Start();
 		}
 
 		private void ThumbnailViewMoved(IntPtr id)
@@ -1084,6 +1213,9 @@ namespace EveOPreview.Services
 				//this.ThumbnailActivated(entry.Value.Id);
 				//this.SwitchActiveClient(entry.Value.Id, entry.Value.Title);
 				this.ApplyClientLayout(entry.Value);
+				// Re-register the live thumbnail so a newly selected profile's
+				// source crop is applied immediately as well as its placement.
+				entry.Value.Refresh(true);
 			}
 			//			this._thumbnailViews.Clear();
 
@@ -1238,6 +1370,14 @@ namespace EveOPreview.Services
 			RegisterCycleClientHotkey(this._configuration.CycleGroup5ForwardHotkeys?.Select(x => this._configuration.StringToKey(x)), true, this._configuration.CycleGroup5ClientsOrder);
 			RegisterCycleClientHotkey(this._configuration.CycleGroup5BackwardHotkeys?.Select(x => this._configuration.StringToKey(x)), false, this._configuration.CycleGroup5ClientsOrder);
 
+			for (int group = 1; group <= 5; group++)
+			{
+				List<string> forwardHotkeys = GetTemporaryHotkeys(this._configuration.TemporaryCycleGroupForwardHotkeys, group);
+				List<string> backwardHotkeys = GetTemporaryHotkeys(this._configuration.TemporaryCycleGroupBackwardHotkeys, group);
+				RegisterCycleClientHotkey(forwardHotkeys.Select(this._configuration.StringToKey), true, null, group);
+				RegisterCycleClientHotkey(backwardHotkeys.Select(this._configuration.StringToKey), false, null, group);
+			}
+
 			RegisterMinimizeAllClientsHotkey(this._configuration.MinimizeAllClientsHotkeys?.Select(x => this._configuration.StringToKey(x)));
 			RegisterRefreshMinimizedClientsHotkey(this._configuration.RefreshMinimizedClientsHotkeys?.Select(x => this._configuration.StringToKey(x)));
 
@@ -1251,6 +1391,15 @@ namespace EveOPreview.Services
 				}
 				catch { /* ignore single view failure */ }
 			}
+		}
+
+		private static List<string> GetTemporaryHotkeys(
+			Dictionary<int, List<string>> hotkeysByGroup,
+			int group)
+		{
+			return hotkeysByGroup != null && hotkeysByGroup.TryGetValue(group, out List<string> hotkeys)
+				? hotkeys ?? new List<string>()
+				: new List<string>();
 		}
 	}
 }

@@ -9,6 +9,8 @@ namespace EveOPreview.Configuration.Implementation
 {
 	sealed class ThumbnailConfiguration : IThumbnailConfiguration
 	{
+		private const int CURRENT_CONFIG_VERSION = 3;
+
 		#region Private fields
 		private bool _enablePerClientThumbnailLayouts;
 		private bool _enableClientLayoutTracking;
@@ -16,7 +18,7 @@ namespace EveOPreview.Configuration.Implementation
 
 		public ThumbnailConfiguration()
 		{
-			this.ConfigVersion = 1;
+			this.ConfigVersion = CURRENT_CONFIG_VERSION;
 
 			this.Language = "en-US";
 
@@ -56,6 +58,9 @@ namespace EveOPreview.Configuration.Implementation
 			{
 				{ "EVE - cycle group 5", 1 },
 			};
+
+			this.TemporaryCycleGroupForwardHotkeys = CreateEmptyTemporaryHotkeys();
+			this.TemporaryCycleGroupBackwardHotkeys = CreateEmptyTemporaryHotkeys();
 
 			this.PerClientActiveClientHighlightColor = new Dictionary<string, Color>
 			{
@@ -143,10 +148,13 @@ namespace EveOPreview.Configuration.Implementation
 			this.ThumbnailZoomFactor = 2;
 			this.ThumbnailZoomAnchor = ZoomAnchor.NW;
 			this.OverlayLabelAnchor = ZoomAnchor.NW;
+			this.SolarSystemLabelAnchor = ZoomAnchor.S;
 			this.CycleGroupIndicatorAnchor = ZoomAnchor.NW;
 
 			this.ShowThumbnailOverlays = true;
-			this.ShowSolarSystemOverlay = true;
+			// Existing personal configurations retain their explicit saved value.
+			// Older stock configurations opt in from the Overlay tab.
+			this.ShowSolarSystemOverlay = false;
 			this.ShowThumbnailFrames = false;
 			this.LockThumbnailLocation = false;
 
@@ -161,6 +169,8 @@ namespace EveOPreview.Configuration.Implementation
 
 			this.OverlayLabelColor = Color.Orange;
 			this.OverlayLabelFont = new Font(FontFamily.GenericSansSerif,10.0F, FontStyle.Bold);
+			this.SolarSystemLabelColor = Color.WhiteSmoke;
+			this.SolarSystemLabelFont = new Font(FontFamily.GenericSansSerif, 10.0F, FontStyle.Bold);
 
 			this.IconName = "";
 
@@ -221,6 +231,12 @@ namespace EveOPreview.Configuration.Implementation
 
 		[JsonProperty("CycleGroup5ClientsOrder")]
 		public Dictionary<string, int> CycleGroup5ClientsOrder { get; set; }
+
+		[JsonProperty("TemporaryCycleGroupForwardHotkeys")]
+		public Dictionary<int, List<string>> TemporaryCycleGroupForwardHotkeys { get; set; }
+
+		[JsonProperty("TemporaryCycleGroupBackwardHotkeys")]
+		public Dictionary<int, List<string>> TemporaryCycleGroupBackwardHotkeys { get; set; }
 
 		[JsonProperty("PerClientPreventPreviewColor")]
 		public Dictionary<string, Color> PerClientPreventPreviewColor { get; set; }
@@ -314,6 +330,7 @@ namespace EveOPreview.Configuration.Implementation
 		public int ThumbnailZoomFactor { get; set; }
 		public ZoomAnchor ThumbnailZoomAnchor { get; set; }
 		public ZoomAnchor OverlayLabelAnchor { get; set; }
+		public ZoomAnchor SolarSystemLabelAnchor { get; set; }
 		public ZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		public bool ShowThumbnailOverlays { get; set; }
@@ -329,9 +346,12 @@ namespace EveOPreview.Configuration.Implementation
 		public Color ActiveClientHighlightColor { get; set; }
 		public Color PreventPreviewColor { get; set; }
 		public Color OverlayLabelColor { get; set; }
+		public Color SolarSystemLabelColor { get; set; }
 
 		[JsonProperty]
 		public Font OverlayLabelFont { get; set; }
+		[JsonProperty]
+		public Font SolarSystemLabelFont { get; set; }
 		public string IconName { get; set; }
 
 		public int ActiveClientHighlightThickness { get; set; }
@@ -630,11 +650,64 @@ namespace EveOPreview.Configuration.Implementation
 		/// </summary>
 		public void ApplyRestrictions()
 		{
+			int loadedConfigVersion = this.ConfigVersion;
+			if (loadedConfigVersion < 3)
+			{
+				// Before v3 the system name reused the character font and was placed on
+				// the opposite vertical edge. Preserve that appearance for old JSON files.
+				this.SolarSystemLabelFont = this.OverlayLabelFont == null
+					? null
+					: (Font)this.OverlayLabelFont.Clone();
+				this.SolarSystemLabelColor = Color.WhiteSmoke;
+				this.SolarSystemLabelAnchor = this.OverlayLabelAnchor == ZoomAnchor.SW ||
+					this.OverlayLabelAnchor == ZoomAnchor.S ||
+					this.OverlayLabelAnchor == ZoomAnchor.SE
+					? ZoomAnchor.N
+					: ZoomAnchor.S;
+			}
+			this.TemporaryCycleGroupForwardHotkeys = NormalizeTemporaryHotkeys(this.TemporaryCycleGroupForwardHotkeys);
+			this.TemporaryCycleGroupBackwardHotkeys = NormalizeTemporaryHotkeys(this.TemporaryCycleGroupBackwardHotkeys);
+			this.ConfigVersion = CURRENT_CONFIG_VERSION;
+			this.Language ??= "en-US";
+			this.IconName ??= string.Empty;
+			this.OverlayLabelFont ??= new Font(FontFamily.GenericSansSerif, 10.0F, FontStyle.Bold);
+			this.SolarSystemLabelFont ??= (Font)this.OverlayLabelFont.Clone();
+			this.CycleGroupExclusions ??= new Dictionary<string, bool>();
+			this.CycleGroup1ForwardHotkeys ??= new List<string>();
+			this.CycleGroup1BackwardHotkeys ??= new List<string>();
+			this.CycleGroup1ClientsOrder ??= new Dictionary<string, int>();
+			this.CycleGroup2ForwardHotkeys ??= new List<string>();
+			this.CycleGroup2BackwardHotkeys ??= new List<string>();
+			this.CycleGroup2ClientsOrder ??= new Dictionary<string, int>();
+			this.CycleGroup3ForwardHotkeys ??= new List<string>();
+			this.CycleGroup3BackwardHotkeys ??= new List<string>();
+			this.CycleGroup3ClientsOrder ??= new Dictionary<string, int>();
+			this.CycleGroup4ForwardHotkeys ??= new List<string>();
+			this.CycleGroup4BackwardHotkeys ??= new List<string>();
+			this.CycleGroup4ClientsOrder ??= new Dictionary<string, int>();
+			this.CycleGroup5ForwardHotkeys ??= new List<string>();
+			this.CycleGroup5BackwardHotkeys ??= new List<string>();
+			this.CycleGroup5ClientsOrder ??= new Dictionary<string, int>();
+			this.PerClientPreventPreviewColor ??= new Dictionary<string, Color>();
+			this.PerClientActiveClientHighlightColor ??= new Dictionary<string, Color>();
+			this.PerClientPreventPreviews ??= new Dictionary<string, bool>();
+			this.PerClientAliases ??= new Dictionary<string, string>();
+			this.PerClientThumbnailSize ??= new Dictionary<string, Size>();
+			this.PerClientZoomAnchor ??= new Dictionary<string, ZoomAnchor>();
 			this.PerClientCropRegions ??= new Dictionary<string, CropRegion>();
 			this.CropPresets ??= new Dictionary<string, CropPreset>();
 			this.PerClientCropPresetIds ??= new Dictionary<string, string>();
 			this.PerClientSolarSystems ??= new Dictionary<string, string>();
 			this.PerClientSolarSystemObservations ??= new Dictionary<string, SolarSystemObservation>();
+			this.PerClientLayout ??= new Dictionary<string, Dictionary<string, Point>>();
+			this.FlatLayout ??= new Dictionary<string, Point>();
+			this.ClientLayout ??= new Dictionary<string, ClientLayout>();
+			this.ClientHotkey ??= new Dictionary<string, string>();
+			this.MinimizeAllClientsHotkeys ??= new List<string>();
+			this.RefreshMinimizedClientsHotkeys ??= new List<string>();
+			this.DisableThumbnail ??= new Dictionary<string, bool>();
+			this.PriorityClients ??= new List<string>();
+			this.ExecutablesToPreview ??= new List<string> { "exefile" };
 			foreach (string invalidClient in this.PerClientSolarSystems
 				.Where(entry => string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
 				.Select(entry => entry.Key)
@@ -702,8 +775,8 @@ namespace EveOPreview.Configuration.Implementation
 			AddKeys(clients, this.FlatLayout);
 			AddKeys(clients, this.PerClientCropRegions);
 			AddKeys(clients, this.PerClientCropPresetIds);
-			AddKeys(clients, this.PerClientSolarSystems);
-			AddKeys(clients, this.PerClientSolarSystemObservations);
+			// Log history is not a configured roster. Including it here makes
+			// characters from old log files appear in assignment screens.
 			AddKeys(clients, this.PerClientAliases);
 			AddKeys(clients, this.PerClientThumbnailSize);
 			AddKeys(clients, this.CycleGroup1ClientsOrder);
@@ -720,6 +793,35 @@ namespace EveOPreview.Configuration.Implementation
 				.Where(entry => string.Equals(entry.Value, presetId, StringComparison.Ordinal))
 				.Select(entry => entry.Key)
 				.ToList() ?? new List<string>();
+		}
+
+		private static Dictionary<int, List<string>> CreateEmptyTemporaryHotkeys()
+		{
+			Dictionary<int, List<string>> result = new Dictionary<int, List<string>>();
+			for (int group = 1; group <= 5; group++)
+			{
+				result[group] = new List<string>();
+			}
+			return result;
+		}
+
+		private static Dictionary<int, List<string>> NormalizeTemporaryHotkeys(
+			Dictionary<int, List<string>> source)
+		{
+			Dictionary<int, List<string>> result = CreateEmptyTemporaryHotkeys();
+			foreach (KeyValuePair<int, List<string>> entry in source ?? new Dictionary<int, List<string>>())
+			{
+				if (entry.Key < 1 || entry.Key > 5)
+				{
+					continue;
+				}
+				result[entry.Key] = (entry.Value ?? new List<string>())
+					.Where(value => !string.IsNullOrWhiteSpace(value))
+					.Select(value => value.Trim())
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.ToList();
+			}
+			return result;
 		}
 
 		private void ImportLegacyCropRegions()

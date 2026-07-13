@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System;
+using System.IO;
 using Newtonsoft.Json;
 
 namespace EveOPreview.Configuration.Implementation
@@ -8,6 +9,8 @@ namespace EveOPreview.Configuration.Implementation
 		public const string CONFIGURATION_FILE_NAME = "EVE-O-Preview.json";
 		private readonly IAppConfig _appConfig;
 		private readonly IThumbnailConfiguration _thumbnailConfiguration;
+		private readonly object _ioLock = new object();
+		private bool _skipNextBackup;
 
 		public ConfigurationStorage(IAppConfig appConfig, IThumbnailConfiguration thumbnailConfiguration)
 		{
@@ -23,25 +26,86 @@ namespace EveOPreview.Configuration.Implementation
 		{
 			string filename = this.GetConfigFileName();
 
-			if (!File.Exists(filename))
+			lock (this._ioLock)
 			{
-				return;
+				if (!File.Exists(filename))
+				{
+					this.ResetConfiguration();
+					return;
+				}
+
+				try
+				{
+					string rawData = File.ReadAllText(filename);
+					this.BackUpPrePersonalConfiguration(filename, rawData);
+					this.PopulateConfiguration(rawData);
+					this._skipNextBackup = false;
+				}
+				catch (JsonException)
+				{
+					// A partial or hand-edited JSON file must not prevent startup. Keep
+					// the damaged file out of the last-good slot and recover if possible.
+					this._skipNextBackup = true;
+					string backupFilename = this.GetLastGoodFilename(filename);
+					try
+					{
+						if (File.Exists(backupFilename))
+						{
+							this.PopulateConfiguration(File.ReadAllText(backupFilename));
+							return;
+						}
+					}
+					catch (JsonException)
+					{
+					}
+					catch (IOException)
+					{
+					}
+					catch (UnauthorizedAccessException)
+					{
+					}
+
+					this.ResetConfiguration();
+				}
+				catch (IOException)
+				{
+					// Preserve the currently loaded profile if storage is temporarily unavailable.
+				}
+				catch (UnauthorizedAccessException)
+				{
+					// Preserve the currently loaded profile if storage is read-only.
+				}
 			}
+		}
 
-			string rawData = File.ReadAllText(filename);
-			this.BackUpPrePersonalConfiguration(filename, rawData);
+		private void PopulateConfiguration(string rawData)
+		{
+			this.ResetConfiguration();
+			try
+			{
+				JsonConvert.PopulateObject(rawData, this._thumbnailConfiguration, CreateSerializerSettings());
+				this._thumbnailConfiguration.ApplyRestrictions();
+			}
+			catch (JsonException)
+			{
+				this.ResetConfiguration();
+				throw;
+			}
+		}
 
-			JsonSerializerSettings jsonSerializerSettings = new JsonSerializerSettings()
+		private void ResetConfiguration()
+		{
+			string defaults = JsonConvert.SerializeObject(new ThumbnailConfiguration());
+			JsonConvert.PopulateObject(defaults, this._thumbnailConfiguration, CreateSerializerSettings());
+			this._thumbnailConfiguration.ApplyRestrictions();
+		}
+
+		private static JsonSerializerSettings CreateSerializerSettings()
+		{
+			return new JsonSerializerSettings
 			{
 				ObjectCreationHandling = ObjectCreationHandling.Replace
 			};
-
-			// StageHotkeyArraysToAvoidDuplicates(rawData);
-
-			JsonConvert.PopulateObject(rawData, this._thumbnailConfiguration, jsonSerializerSettings);
-
-			// Validate data after loading it
-			this._thumbnailConfiguration.ApplyRestrictions();
 		}
 
 		private void BackUpPrePersonalConfiguration(string filename, string rawData)
@@ -77,17 +141,73 @@ namespace EveOPreview.Configuration.Implementation
 
 		public void Save()
 		{
-			string rawData = JsonConvert.SerializeObject(this._thumbnailConfiguration, Formatting.Indented);
-			string filename = this.GetConfigFileName();
+			lock (this._ioLock)
+			{
+				string rawData = JsonConvert.SerializeObject(this._thumbnailConfiguration, Formatting.Indented);
+				string filename = Path.GetFullPath(this.GetConfigFileName());
+				string directory = Path.GetDirectoryName(filename) ?? ".";
+				string name = Path.GetFileNameWithoutExtension(filename);
+				string temporaryFilename = Path.Combine(directory, $"{name}.saving.tmp");
+				string backupFilename = this.GetLastGoodFilename(filename);
 
-			try
-			{
-				File.WriteAllText(filename, rawData);
+				try
+				{
+					File.WriteAllText(temporaryFilename, rawData);
+					if (File.Exists(filename))
+					{
+						if (!this._skipNextBackup)
+						{
+							File.Copy(filename, backupFilename, overwrite: true);
+						}
+						try
+						{
+							File.Replace(temporaryFilename, filename, null, ignoreMetadataErrors: true);
+						}
+						catch (PlatformNotSupportedException)
+						{
+							File.Move(temporaryFilename, filename, overwrite: true);
+						}
+					}
+					else
+					{
+						File.Move(temporaryFilename, filename);
+					}
+					this._skipNextBackup = false;
+				}
+				catch (IOException)
+				{
+					// The previous file remains intact until replacement succeeds.
+				}
+				catch (System.UnauthorizedAccessException)
+				{
+					// A read-only directory must not terminate the app.
+				}
+				finally
+				{
+					try
+					{
+						if (File.Exists(temporaryFilename))
+						{
+							File.Delete(temporaryFilename);
+						}
+					}
+					catch (IOException)
+					{
+					}
+					catch (System.UnauthorizedAccessException)
+					{
+					}
+				}
 			}
-			catch (IOException)
-			{
-				// Ignore error if for some reason the updated config cannot be written down
-			}
+		}
+
+		private string GetLastGoodFilename(string filename)
+		{
+			string fullPath = Path.GetFullPath(filename);
+			string directory = Path.GetDirectoryName(fullPath) ?? ".";
+			string name = Path.GetFileNameWithoutExtension(fullPath);
+			string extension = Path.GetExtension(fullPath);
+			return Path.Combine(directory, $"{name}.last-good{extension}");
 		}
 
 		private string GetConfigFileName()

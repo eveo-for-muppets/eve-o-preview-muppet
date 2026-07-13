@@ -21,7 +21,9 @@ namespace EveOPreview.View
 		private string _solarSystemText;
 		private Font _solarSystemFont;
 		private Color _solarSystemColor;
-		private ZoomAnchor _characterLabelAnchor;
+		private ZoomAnchor _solarSystemAnchor;
+		private readonly Label _temporaryGroupLabel;
+		private int? _temporaryGroup;
 		#endregion
 
 		public ThumbnailOverlay(Form owner,
@@ -40,6 +42,24 @@ namespace EveOPreview.View
 			this._areaMouseMoveAction = areaMouseMoveAction;
 
 			InitializeComponent();
+
+			this._temporaryGroupLabel = new Label
+			{
+				AutoSize = false,
+				Size = new Size(28, 19),
+				TextAlign = ContentAlignment.MiddleCenter,
+				Font = new Font(SystemFonts.MessageBoxFont.FontFamily, 8.0f, FontStyle.Bold),
+				ForeColor = Color.White,
+				Visible = false
+			};
+			this._temporaryGroupLabel.MouseEnter += this.OverlayArea_MouseEnter;
+			this._temporaryGroupLabel.MouseLeave += this.OverlayArea_MouseLeave;
+			this._temporaryGroupLabel.MouseDown += this.OverlayArea_MouseDown;
+			this._temporaryGroupLabel.MouseUp += this.OverlayArea_MouseUp;
+			this._temporaryGroupLabel.MouseMove += this.OverlayArea_MouseMove;
+			this.Controls.Add(this._temporaryGroupLabel);
+			this._temporaryGroupLabel.BringToFront();
+			this.Resize += (sender, args) => this.PositionTemporaryGroupLabel();
 		}
 
 		private void OverlayArea_MouseEnter(object sender, EventArgs e)
@@ -68,12 +88,12 @@ namespace EveOPreview.View
 			this.OverlayLabel.Text = label;
 		}
 
-		public void SetSolarSystemLabel(string solarSystem, Font font, Color color, ZoomAnchor characterLabelAnchor)
+		public void SetSolarSystemLabel(string solarSystem, Font font, Color color, ZoomAnchor anchor)
 		{
 			this._solarSystemText = solarSystem?.Trim();
 			this._solarSystemFont = font;
 			this._solarSystemColor = color;
-			this._characterLabelAnchor = characterLabelAnchor;
+			this._solarSystemAnchor = anchor;
 		}
 		public void SetCycleGroupIndicator(bool displayCycleGroup, ZoomAnchor anchor)
 		{
@@ -269,6 +289,36 @@ namespace EveOPreview.View
 			this.PaintSolarSystem(e);
 		}
 
+		public void SetTemporaryCycleGroupIndicator(int? group)
+		{
+			this._temporaryGroup = group is >= 1 and <= 5 ? group : null;
+			this._temporaryGroupLabel.Visible = this._temporaryGroup.HasValue;
+			if (!this._temporaryGroup.HasValue)
+			{
+				return;
+			}
+
+			Color[] colors =
+			{
+				Color.RoyalBlue,
+				Color.SeaGreen,
+				Color.DarkOrange,
+				Color.MediumPurple,
+				Color.Crimson
+			};
+			this._temporaryGroupLabel.Text = $"T{this._temporaryGroup.Value}";
+			this._temporaryGroupLabel.BackColor = colors[this._temporaryGroup.Value - 1];
+			this.PositionTemporaryGroupLabel();
+			this._temporaryGroupLabel.BringToFront();
+		}
+
+		private void PositionTemporaryGroupLabel()
+		{
+			const int margin = 3;
+			this._temporaryGroupLabel.Left = Math.Max(margin, this.ClientSize.Width - this._temporaryGroupLabel.Width - margin);
+			this._temporaryGroupLabel.Top = margin;
+		}
+
 		private void PaintSolarSystem(PaintEventArgs e)
 		{
 			if (string.IsNullOrWhiteSpace(this._solarSystemText) || this._solarSystemFont == null)
@@ -277,8 +327,7 @@ namespace EveOPreview.View
 			}
 
 			const int margin = 5;
-			TextFormatFlags flags = TextFormatFlags.HorizontalCenter |
-				TextFormatFlags.VerticalCenter |
+			TextFormatFlags flags = TextFormatFlags.VerticalCenter |
 				TextFormatFlags.SingleLine |
 				TextFormatFlags.EndEllipsis |
 				TextFormatFlags.NoPadding |
@@ -287,13 +336,50 @@ namespace EveOPreview.View
 			// TextRenderer can underestimate the final glyph bounds by a pixel or two
 			// under DPI scaling. Extra vertical room prevents the baseline being clipped.
 			int height = Math.Max(1, measured.Height + 4);
-			bool characterLabelIsAtBottom = this._characterLabelAnchor == ZoomAnchor.SW ||
-				this._characterLabelAnchor == ZoomAnchor.S ||
-				this._characterLabelAnchor == ZoomAnchor.SE;
 			int canvasWidth = this.OverlayAreaPictureBox.ClientSize.Width;
 			int canvasHeight = this.OverlayAreaPictureBox.ClientSize.Height;
-			int top = characterLabelIsAtBottom ? margin : Math.Max(margin, canvasHeight - height - margin);
-			Rectangle textRectangle = new Rectangle(margin, top, Math.Max(1, canvasWidth - (margin * 2)), height);
+			int availableWidth = Math.Max(1, canvasWidth - (margin * 2));
+			int width = Math.Min(availableWidth, Math.Max(1, measured.Width + 4));
+			int left;
+			if (this._solarSystemAnchor == ZoomAnchor.N ||
+				this._solarSystemAnchor == ZoomAnchor.C ||
+				this._solarSystemAnchor == ZoomAnchor.S)
+			{
+				left = Math.Max(margin, (canvasWidth - width) / 2);
+				flags |= TextFormatFlags.HorizontalCenter;
+			}
+			else if (this._solarSystemAnchor == ZoomAnchor.NE ||
+				this._solarSystemAnchor == ZoomAnchor.E ||
+				this._solarSystemAnchor == ZoomAnchor.SE)
+			{
+				left = Math.Max(margin, canvasWidth - width - margin);
+				flags |= TextFormatFlags.Right;
+			}
+			else
+			{
+				left = margin;
+				flags |= TextFormatFlags.Left;
+			}
+
+			int top;
+			if (this._solarSystemAnchor == ZoomAnchor.W ||
+				this._solarSystemAnchor == ZoomAnchor.C ||
+				this._solarSystemAnchor == ZoomAnchor.E)
+			{
+				top = Math.Max(margin, (canvasHeight - height) / 2);
+			}
+			else if (this._solarSystemAnchor == ZoomAnchor.SW ||
+				this._solarSystemAnchor == ZoomAnchor.S ||
+				this._solarSystemAnchor == ZoomAnchor.SE)
+			{
+				top = Math.Max(margin, canvasHeight - height - margin);
+			}
+			else
+			{
+				top = margin;
+			}
+
+			Rectangle textRectangle = new Rectangle(left, top, width, height);
 			Rectangle shadowRectangle = textRectangle;
 			shadowRectangle.Offset(1, 1);
 			TextRenderer.DrawText(e.Graphics, this._solarSystemText, this._solarSystemFont, shadowRectangle, Color.Black, flags);

@@ -12,16 +12,27 @@ namespace EveOPreview.Services
 {
 	sealed class CharacterLocationTracker : ICharacterLocationTracker
 	{
+		private sealed class LogFileState
+		{
+			public long Offset { get; set; }
+			public string PendingText { get; set; } = string.Empty;
+			public string Character { get; set; }
+			public string Source { get; set; }
+		}
+
 		private const int POLL_INTERVAL_MILLISECONDS = 2000;
-		private const int MAX_LOG_FILES = 10000;
+		private const int MAX_LOG_FILES = 1000;
+		private const int MAX_LOG_AGE_DAYS = 14;
+		private const int MAX_BYTES_PER_FILE_PER_SCAN = 4 * 1024 * 1024;
 		private const string SOURCE_LOCAL_CHAT = "Local chat";
 		private const string SOURCE_GAME_LOG = "Game log";
 
 		private readonly IThumbnailConfiguration _configuration;
 		private readonly Dictionary<string, SolarSystemObservation> _observations;
-		private readonly Dictionary<string, long> _knownFileLengths;
+		private readonly Dictionary<string, LogFileState> _fileStates;
 		private readonly object _lifecycleLock;
 		private readonly object _observationLock;
+		private readonly object _scanLock;
 		private CancellationTokenSource _cancellation;
 		private Task _scanTask;
 
@@ -29,11 +40,11 @@ namespace EveOPreview.Services
 		{
 			this._configuration = configuration;
 			this._observations = new Dictionary<string, SolarSystemObservation>(StringComparer.OrdinalIgnoreCase);
-			this._knownFileLengths = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+			this._fileStates = new Dictionary<string, LogFileState>(StringComparer.OrdinalIgnoreCase);
 			this._lifecycleLock = new object();
 			this._observationLock = new object();
-
-			this.LoadLocationsFromConfiguration();
+			this._scanLock = new object();
+			this.ReloadConfiguration();
 		}
 
 		public void Start()
@@ -42,11 +53,36 @@ namespace EveOPreview.Services
 			{
 				if (this._scanTask != null && !this._scanTask.IsCompleted)
 				{
+					// A normal repeated Start is a no-op. If Stop has already cancelled
+					// the old loop, queue the replacement after it has finished.
+					if (this._cancellation?.IsCancellationRequested != true)
+					{
+						return;
+					}
+
+					Task previousTask = this._scanTask;
+					CancellationTokenSource previousCancellation = this._cancellation;
+					this._cancellation = new CancellationTokenSource();
+					CancellationToken nextToken = this._cancellation.Token;
+					this._scanTask = Task.Run(async () =>
+					{
+						try
+						{
+							await previousTask;
+						}
+						catch (OperationCanceledException)
+						{
+						}
+						previousCancellation?.Dispose();
+						this.ReloadConfiguration();
+						await this.ScanLoop(nextToken);
+					});
 					return;
 				}
 
+				this._cancellation?.Dispose();
 				this._cancellation = new CancellationTokenSource();
-				this.LoadLocationsFromConfiguration();
+				this.ReloadConfiguration();
 				this._scanTask = Task.Run(() => this.ScanLoop(this._cancellation.Token));
 			}
 		}
@@ -62,14 +98,82 @@ namespace EveOPreview.Services
 
 			try
 			{
-				scanTask?.Wait(1500);
+				scanTask?.Wait(3000);
 			}
-			catch (AggregateException)
+			catch (AggregateException exception) when (
+				exception.InnerExceptions.All(inner => inner is OperationCanceledException || inner is TaskCanceledException))
 			{
-				// Cancellation during shutdown is expected.
 			}
 
-			this.CopyLocationsToConfiguration();
+			this.FlushToConfiguration();
+		}
+
+		public void ReloadConfiguration()
+		{
+			lock (this._scanLock)
+			{
+				this._fileStates.Clear();
+				lock (this._observationLock)
+				{
+					this._observations.Clear();
+				}
+
+				foreach (KeyValuePair<string, SolarSystemObservation> entry in
+					this._configuration.PerClientSolarSystemObservations ?? new Dictionary<string, SolarSystemObservation>())
+				{
+					this.ApplyObservation(entry.Key, entry.Value);
+				}
+
+				foreach (KeyValuePair<string, string> entry in
+					this._configuration.PerClientSolarSystems ?? new Dictionary<string, string>())
+				{
+					if (string.IsNullOrWhiteSpace(entry.Key) || string.IsNullOrWhiteSpace(entry.Value))
+					{
+						continue;
+					}
+
+					string normalizedCharacter = NormalizeClientTitle(entry.Key);
+					lock (this._observationLock)
+					{
+						if (!this._observations.ContainsKey(normalizedCharacter))
+						{
+							this._observations[normalizedCharacter] = new SolarSystemObservation
+							{
+								SolarSystem = entry.Value.Trim(),
+								ObservedAtUtc = DateTime.MinValue,
+								Source = "Legacy cache"
+							};
+						}
+					}
+				}
+			}
+		}
+
+		public void FlushToConfiguration()
+		{
+			Dictionary<string, string> systems;
+			Dictionary<string, SolarSystemObservation> observations;
+			lock (this._observationLock)
+			{
+				systems = this._observations
+					.Where(entry => !string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value?.SolarSystem))
+					.ToDictionary(
+						entry => $"EVE - {entry.Key}",
+						entry => entry.Value.SolarSystem,
+						StringComparer.OrdinalIgnoreCase);
+				observations = this._observations
+					.Where(entry => !string.IsNullOrWhiteSpace(entry.Key) && entry.Value?.IsValid == true)
+					.ToDictionary(
+						entry => $"EVE - {entry.Key}",
+						entry => CloneObservation(entry.Value),
+						StringComparer.OrdinalIgnoreCase);
+			}
+
+			lock (this._configuration)
+			{
+				this._configuration.PerClientSolarSystems = systems;
+				this._configuration.PerClientSolarSystemObservations = observations;
+			}
 		}
 
 		public string GetSolarSystem(string clientTitle)
@@ -91,22 +195,24 @@ namespace EveOPreview.Services
 		{
 			while (!cancellationToken.IsCancellationRequested)
 			{
-				try
+				if (this._configuration.ShowSolarSystemOverlay)
 				{
-					this.ScanChangedLogs(cancellationToken);
-					this.CopyLocationsToConfiguration();
-				}
-				catch (OperationCanceledException)
-				{
-					break;
-				}
-				catch (IOException)
-				{
-					// EVE may rotate a log while it is being inspected. Retry next poll.
-				}
-				catch (UnauthorizedAccessException)
-				{
-					// A locked or inaccessible log should not stop the tracker.
+					try
+					{
+						this.ScanChangedLogs(cancellationToken);
+					}
+					catch (OperationCanceledException)
+					{
+						break;
+					}
+					catch (IOException)
+					{
+						// EVE may rotate a log while it is being inspected.
+					}
+					catch (UnauthorizedAccessException)
+					{
+						// An inaccessible log must not stop thumbnail updates.
+					}
 				}
 
 				try
@@ -122,113 +228,143 @@ namespace EveOPreview.Services
 
 		private void ScanChangedLogs(CancellationToken cancellationToken)
 		{
-			string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-			string chatLogsPath = Path.Combine(documents, "EVE", "logs", "Chatlogs");
-			string gameLogsPath = Path.Combine(documents, "EVE", "logs", "Gamelogs");
-			if (!Directory.Exists(gameLogsPath) && !Directory.Exists(chatLogsPath))
+			lock (this._scanLock)
+			{
+				string documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+				string chatLogsPath = Path.Combine(documents, "EVE", "logs", "Chatlogs");
+				string gameLogsPath = Path.Combine(documents, "EVE", "logs", "Gamelogs");
+				if (!Directory.Exists(gameLogsPath) && !Directory.Exists(chatLogsPath))
+				{
+					return;
+				}
+
+				DateTime cutoff = DateTime.UtcNow.AddDays(-MAX_LOG_AGE_DAYS);
+				IEnumerable<(FileInfo File, string Source)> gameLogs = Directory.Exists(gameLogsPath)
+					? new DirectoryInfo(gameLogsPath).EnumerateFiles("*.txt", SearchOption.TopDirectoryOnly)
+						.Select(file => (file, SOURCE_GAME_LOG))
+					: Enumerable.Empty<(FileInfo, string)>();
+				IEnumerable<(FileInfo File, string Source)> localChatLogs = Directory.Exists(chatLogsPath)
+					? new DirectoryInfo(chatLogsPath).EnumerateFiles("Local_*.txt", SearchOption.TopDirectoryOnly)
+						.Select(file => (file, SOURCE_LOCAL_CHAT))
+					: Enumerable.Empty<(FileInfo, string)>();
+				List<(FileInfo File, string Source)> files = gameLogs
+					.Concat(localChatLogs)
+					.Where(entry => entry.File.LastWriteTimeUtc >= cutoff)
+					.OrderBy(entry => entry.File.LastWriteTimeUtc)
+					.TakeLast(MAX_LOG_FILES)
+					.ToList();
+
+				HashSet<string> retainedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				foreach ((FileInfo file, string source) in files)
+				{
+					cancellationToken.ThrowIfCancellationRequested();
+					retainedPaths.Add(file.FullName);
+					this.ReadAppendedLogText(file, source, cancellationToken);
+				}
+
+				foreach (string stalePath in this._fileStates.Keys.Where(path => !retainedPaths.Contains(path)).ToList())
+				{
+					this._fileStates.Remove(stalePath);
+				}
+			}
+		}
+
+		private void ReadAppendedLogText(FileInfo file, string source, CancellationToken cancellationToken)
+		{
+			long length;
+			try
+			{
+				length = file.Length;
+			}
+			catch (IOException)
 			{
 				return;
 			}
 
-			IEnumerable<(FileInfo File, string Source)> gameLogs = Directory.Exists(gameLogsPath)
-				? new DirectoryInfo(gameLogsPath)
-					.EnumerateFiles("*.txt", SearchOption.TopDirectoryOnly)
-					.Select(file => (file, SOURCE_GAME_LOG))
-				: Enumerable.Empty<(FileInfo, string)>();
-			IEnumerable<(FileInfo File, string Source)> localChatLogs = Directory.Exists(chatLogsPath)
-				? new DirectoryInfo(chatLogsPath)
-					.EnumerateFiles("Local_*.txt", SearchOption.TopDirectoryOnly)
-					.Select(file => (file, SOURCE_LOCAL_CHAT))
-				: Enumerable.Empty<(FileInfo, string)>();
-			IEnumerable<(FileInfo File, string Source)> files = gameLogs
-				.Concat(localChatLogs)
-				.OrderBy(entry => entry.File.LastWriteTimeUtc)
-				.TakeLast(MAX_LOG_FILES);
+			if (!this._fileStates.TryGetValue(file.FullName, out LogFileState state) || length < state.Offset)
+			{
+				state = new LogFileState { Source = source };
+				this._fileStates[file.FullName] = state;
+			}
+			if (length <= state.Offset)
+			{
+				return;
+			}
 
-			foreach ((FileInfo file, string source) in files)
+			using FileStream stream = new FileStream(
+				file.FullName,
+				FileMode.Open,
+				FileAccess.Read,
+				FileShare.ReadWrite | FileShare.Delete);
+			stream.Seek(state.Offset, SeekOrigin.Begin);
+			long remaining = Math.Min(length - state.Offset, MAX_BYTES_PER_FILE_PER_SCAN);
+			int requestedBytes = (int)(remaining - (remaining % 2));
+			if (requestedBytes <= 0)
+			{
+				return;
+			}
+
+			byte[] buffer = new byte[requestedBytes];
+			int bytesRead = 0;
+			while (bytesRead < requestedBytes)
 			{
 				cancellationToken.ThrowIfCancellationRequested();
-				long length;
-				try
+				int read = stream.Read(buffer, bytesRead, requestedBytes - bytesRead);
+				if (read <= 0)
 				{
-					length = file.Length;
+					break;
 				}
-				catch (IOException)
-				{
-					continue;
-				}
-
-				if (this._knownFileLengths.TryGetValue(file.FullName, out long knownLength) && knownLength == length)
-				{
-					continue;
-				}
-
-				if (this.TryReadLatestLocation(file.FullName, source, cancellationToken, out string character, out SolarSystemObservation observation))
-				{
-					this.ApplyObservation(character, observation);
-				}
-				this._knownFileLengths[file.FullName] = length;
+				bytesRead += read;
 			}
-		}
-
-		private bool TryReadLatestLocation(
-			string path,
-			string source,
-			CancellationToken cancellationToken,
-			out string character,
-			out SolarSystemObservation observation)
-		{
-			character = null;
-			observation = null;
-
-			try
+			bytesRead -= bytesRead % 2;
+			if (bytesRead <= 0)
 			{
-				using FileStream stream = new FileStream(
-					path,
-					FileMode.Open,
-					FileAccess.Read,
-					FileShare.ReadWrite | FileShare.Delete);
-				using StreamReader reader = new StreamReader(
-					stream,
-					Encoding.Unicode,
-					detectEncodingFromByteOrderMarks: true);
+				return;
+			}
 
-				string line;
-				while ((line = reader.ReadLine()) != null)
+			state.Offset += bytesRead;
+			string appended = Encoding.Unicode.GetString(buffer, 0, bytesRead).TrimStart('\uFEFF');
+			string combined = state.PendingText + appended;
+			int finalNewline = combined.LastIndexOf('\n');
+			if (finalNewline < 0)
+			{
+				state.PendingText = combined;
+				return;
+			}
+
+			string completeText = combined.Substring(0, finalNewline + 1);
+			state.PendingText = combined.Substring(finalNewline + 1);
+			SolarSystemObservation latest = null;
+			foreach (string rawLine in completeText.Split('\n'))
+			{
+				cancellationToken.ThrowIfCancellationRequested();
+				string line = rawLine.TrimEnd('\r');
+				string listener = TryParseHeaderValue(line, "Listener");
+				if (!string.IsNullOrWhiteSpace(listener))
 				{
-					cancellationToken.ThrowIfCancellationRequested();
-					string listener = TryParseHeaderValue(line, "Listener");
-					if (!string.IsNullOrWhiteSpace(listener))
-					{
-						character = listener.Trim();
-					}
+					state.Character = listener.Trim();
+				}
 
-					string parsedSystem = TryParseSolarSystem(line);
-					if (!string.IsNullOrWhiteSpace(parsedSystem) && TryParseLogTimestamp(line, out DateTime observedAtUtc))
+				string parsedSystem = TryParseSolarSystem(line);
+				if (!string.IsNullOrWhiteSpace(parsedSystem) && TryParseLogTimestamp(line, out DateTime observedAtUtc))
+				{
+					SolarSystemObservation candidate = new SolarSystemObservation
 					{
-						SolarSystemObservation candidate = new SolarSystemObservation
-						{
-							SolarSystem = parsedSystem,
-							ObservedAtUtc = observedAtUtc,
-							Source = source
-						};
-						if (observation == null || IsNewer(candidate, observation))
-						{
-							observation = candidate;
-						}
+						SolarSystem = parsedSystem,
+						ObservedAtUtc = observedAtUtc,
+						Source = state.Source
+					};
+					if (latest == null || IsNewer(candidate, latest))
+					{
+						latest = candidate;
 					}
 				}
 			}
-			catch (IOException)
-			{
-				return false;
-			}
-			catch (UnauthorizedAccessException)
-			{
-				return false;
-			}
 
-			return !string.IsNullOrWhiteSpace(character) && observation?.IsValid == true;
+			if (!string.IsNullOrWhiteSpace(state.Character) && latest?.IsValid == true)
+			{
+				this.ApplyObservation(state.Character, latest);
+			}
 		}
 
 		private static string TryParseSolarSystem(string line)
@@ -374,7 +510,7 @@ namespace EveOPreview.Services
 
 		private void ApplyObservation(string character, SolarSystemObservation candidate)
 		{
-			if (string.IsNullOrWhiteSpace(character) || candidate?.IsValid != true)
+			if (string.IsNullOrWhiteSpace(character) || candidate == null || string.IsNullOrWhiteSpace(candidate.SolarSystem))
 			{
 				return;
 			}
@@ -420,55 +556,6 @@ namespace EveOPreview.Services
 				ObservedAtUtc = observation.ObservedAtUtc,
 				Source = observation.Source
 			};
-		}
-
-		private void CopyLocationsToConfiguration()
-		{
-			lock (this._observationLock)
-			{
-				this._configuration.PerClientSolarSystems = this._observations
-					.Where(entry => !string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value?.SolarSystem))
-					.ToDictionary(
-						entry => $"EVE - {entry.Key}",
-						entry => entry.Value.SolarSystem,
-						StringComparer.OrdinalIgnoreCase);
-				this._configuration.PerClientSolarSystemObservations = this._observations
-					.Where(entry => !string.IsNullOrWhiteSpace(entry.Key) && entry.Value?.IsValid == true)
-					.ToDictionary(
-						entry => $"EVE - {entry.Key}",
-						entry => CloneObservation(entry.Value),
-						StringComparer.OrdinalIgnoreCase);
-			}
-		}
-
-		private void LoadLocationsFromConfiguration()
-		{
-			foreach (KeyValuePair<string, SolarSystemObservation> entry in this._configuration.PerClientSolarSystemObservations ??
-				new Dictionary<string, SolarSystemObservation>())
-			{
-				this.ApplyObservation(entry.Key, entry.Value);
-			}
-
-			foreach (KeyValuePair<string, string> entry in this._configuration.PerClientSolarSystems ??
-				new Dictionary<string, string>())
-			{
-				if (!string.IsNullOrWhiteSpace(entry.Key) && !string.IsNullOrWhiteSpace(entry.Value))
-				{
-					string normalizedCharacter = NormalizeClientTitle(entry.Key);
-					lock (this._observationLock)
-					{
-						if (!this._observations.ContainsKey(normalizedCharacter))
-						{
-							this._observations[normalizedCharacter] = new SolarSystemObservation
-							{
-								SolarSystem = entry.Value.Trim(),
-								ObservedAtUtc = DateTime.MinValue,
-								Source = "Legacy cache"
-							};
-						}
-					}
-				}
-			}
 		}
 	}
 }

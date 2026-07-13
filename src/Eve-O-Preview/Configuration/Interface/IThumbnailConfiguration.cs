@@ -28,6 +28,9 @@ namespace EveOPreview.Configuration
 		List<string> CycleGroup5BackwardHotkeys { get; set; }
 		Dictionary<string, int> CycleGroup5ClientsOrder { get; set; }
 
+		Dictionary<int, List<string>> TemporaryCycleGroupForwardHotkeys { get; set; }
+		Dictionary<int, List<string>> TemporaryCycleGroupBackwardHotkeys { get; set; }
+
 		Dictionary<string, Color> PerClientActiveClientHighlightColor { get; set; }
 		Dictionary<string, Color> PerClientPreventPreviewColor { get; set; }
 		Dictionary<string, string> PerClientAliases { get; set; }
@@ -70,6 +73,7 @@ namespace EveOPreview.Configuration
 		int ThumbnailZoomFactor { get; set; }
 		ZoomAnchor ThumbnailZoomAnchor { get; set; }
 		ZoomAnchor OverlayLabelAnchor { get; set; }
+		ZoomAnchor SolarSystemLabelAnchor { get; set; }
 		ZoomAnchor CycleGroupIndicatorAnchor { get; set; }
 
 		bool ShowThumbnailOverlays { get; set; }
@@ -86,6 +90,8 @@ namespace EveOPreview.Configuration
 		int ActiveClientHighlightThickness { get; set; }
 		Color OverlayLabelColor { get; set; }
 		Font OverlayLabelFont { get; set; }
+		Color SolarSystemLabelColor { get; set; }
+		Font SolarSystemLabelFont { get; set; }
 
 		string IconName { get; set; }
 		List<string> MinimizeAllClientsHotkeys { get; set; }

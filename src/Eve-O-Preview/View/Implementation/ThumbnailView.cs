@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows.Forms;
 using EveOPreview.Configuration;
 using EveOPreview.Services;
+using EveOPreview.Services.Interop;
 using EveOPreview.UI.Hotkeys;
 
 namespace EveOPreview.View
@@ -150,6 +151,7 @@ namespace EveOPreview.View
 
 		public Action<IntPtr, bool> ThumbnailDeactivated { get; set; }
 		public Action<IntPtr> ThumbnailToggleCycleGroup { get; set; }
+		public Action<IntPtr, int> ThumbnailToggleTemporaryCycleGroup { get; set; }
 
 		private bool WindowMoved = false;
 
@@ -297,6 +299,10 @@ namespace EveOPreview.View
 		public void SetCycleGroupIndicator(bool displayCycleGroup, ZoomAnchor anchor)
 		{
 			this._overlay.SetCycleGroupIndicator(displayCycleGroup, anchor);
+		}
+		public void SetTemporaryCycleGroupIndicator(int? group)
+		{
+			this._overlay.SetTemporaryCycleGroupIndicator(group);
 		}
 
 		public void SetTopMost(bool enableTopmost)
@@ -510,9 +516,9 @@ namespace EveOPreview.View
 			this._overlay.SetPropertiesOverlayLabel(_config.OverlayLabelFont, _config.OverlayLabelColor, _config.OverlayLabelAnchor);
 			this._overlay.SetSolarSystemLabel(
 				_config.ShowSolarSystemOverlay ? this._characterLocationTracker.GetSolarSystem(this.Title) : null,
-				_config.OverlayLabelFont,
-				Color.WhiteSmoke,
-				_config.OverlayLabelAnchor);
+				_config.SolarSystemLabelFont,
+				_config.SolarSystemLabelColor,
+				_config.SolarSystemLabelAnchor);
 
 			this._overlay.Location = overlayLocation;
 			this._overlay.Refresh();
@@ -672,6 +678,16 @@ namespace EveOPreview.View
 		#region Custom GUI events
 		protected virtual void MouseDownEventHandler(MouseButtons mouseButtons, Keys modifierKeys)
 		{
+			if (mouseButtons == MouseButtons.Left && modifierKeys == Keys.None)
+			{
+				int temporaryGroup = GetPressedTemporaryCycleGroup();
+				if (temporaryGroup > 0)
+				{
+					this.ThumbnailToggleTemporaryCycleGroup?.Invoke(this.Id, temporaryGroup);
+					return;
+				}
+			}
+
 			switch (mouseButtons)
 			{
 				case MouseButtons.Left when modifierKeys == Keys.Control:
@@ -696,6 +712,25 @@ namespace EveOPreview.View
 					this.EnterCustomMouseMode();
 					break;
 			}
+		}
+
+		private static int GetPressedTemporaryCycleGroup()
+		{
+			for (int group = 1; group <= 5; group++)
+			{
+				Keys topRowKey = (Keys)((int)Keys.D0 + group);
+				Keys numberPadKey = (Keys)((int)Keys.NumPad0 + group);
+				if (IsKeyPressed(topRowKey) || IsKeyPressed(numberPadKey))
+				{
+					return group;
+				}
+			}
+			return 0;
+		}
+
+		private static bool IsKeyPressed(Keys key)
+		{
+			return (User32NativeMethods.GetAsyncKeyState((int)key) & 0x8000) != 0;
 		}
 		#endregion
 	}

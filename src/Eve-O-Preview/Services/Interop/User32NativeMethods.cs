@@ -18,6 +18,9 @@ namespace EveOPreview.Services.Interop
 		public static extern void SetFocus(IntPtr window);
 
 		[DllImport("user32.dll")]
+		public static extern short GetAsyncKeyState(int virtualKey);
+
+		[DllImport("user32.dll")]
 		public static extern void EnableWindow(IntPtr window, bool isEnabled);
 
 		[DllImport("user32.dll")]

@@ -18,7 +18,10 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>8.0.1.9</ApplicationVersion>
+    <ApplicationVersion>8.0.3.0</ApplicationVersion>
+    <Version>8.0.3.0</Version>
+    <InformationalVersion>8.0.3.0</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <IsWebBootstrapper>false</IsWebBootstrapper>
     <UseApplicationTrust>false</UseApplicationTrust>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -66,8 +69,8 @@
   <PropertyGroup>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <UseWPF>True</UseWPF>
-    <AssemblyVersion>8.0.1.9</AssemblyVersion>
-    <FileVersion>8.0.1.9</FileVersion>
+    <AssemblyVersion>8.0.3.0</AssemblyVersion>
+    <FileVersion>8.0.3.0</FileVersion>
     <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Build|AnyCPU'">
@@ -116,6 +119,7 @@
     <EmbeddedResource Remove="AboutBox.resx" />
   </ItemGroup>
   <ItemGroup>
+	<EmbeddedResource Include="EVE-O-Preview.locale" LogicalName="EveOPreview.EVE-O-Preview.locale" />
     <None Update="EVE-O-Preview.locale">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

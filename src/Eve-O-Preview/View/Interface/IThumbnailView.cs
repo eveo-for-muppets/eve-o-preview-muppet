@@ -25,6 +25,7 @@ namespace EveOPreview.View
 		void SetFrames(bool enable);
 		void SetOverlayLabel();
 		void SetCycleGroupIndicator(bool displayCycleGroup, ZoomAnchor anchor);
+		void SetTemporaryCycleGroupIndicator(int? group);
 		void SetTopMost(bool enableTopmost);
 		void SetHighlight();
 		void SetHighlight(bool enabled, int width);
@@ -46,6 +47,7 @@ namespace EveOPreview.View
 		Action<IntPtr> ThumbnailActivated { get; set; }
 		Action<IntPtr, bool> ThumbnailDeactivated { get; set; }
 		Action<IntPtr> ThumbnailToggleCycleGroup { get; set; }
+		Action<IntPtr, int> ThumbnailToggleTemporaryCycleGroup { get; set; }
 
 		IWindowManager WindowManager { get; }
 		void SetDefaultBorderColor();

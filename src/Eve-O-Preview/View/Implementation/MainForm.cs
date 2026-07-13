@@ -4,6 +4,7 @@ using MediatR;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata.Ecma335;
@@ -21,34 +22,35 @@ namespace EveOPreview.View
 			public override string ToString() => this.Name;
 		}
 
+		private sealed class LanguageOption
+		{
+			public string Code { get; init; }
+			public string DisplayName { get; init; }
+			public override string ToString() => this.DisplayName;
+		}
+
 		#region Private fields
 		private readonly ApplicationContext _context;
 		private readonly Dictionary<ViewZoomAnchor, RadioButton> _zoomAnchorMap;
-		private readonly Dictionary<ViewZoomAnchor, RadioButton> _overlayLabelMap;
-		private readonly Dictionary<ViewZoomAnchor, RadioButton> _cycleGroupIndicatorMap;
 		private ViewZoomAnchor _cachedThumbnailZoomAnchor;
-		private ViewZoomAnchor _cachedOverlayLabelAnchor;
-		private ViewZoomAnchor _cachedCycleGroupIndicatorAnchor;
 		private bool _suppressEvents;
 		private Size _minimumSize;
 		private Size _maximumSize;
 		private string _iconName;
 		private bool _hotkeyCaptureActive = false;
 		private Dictionary<string, string> _configurationFilenames = new Dictionary<string, string>();
-		private System.Windows.Forms.Button _selectCropButton;
-		private System.Windows.Forms.Button _resetCropButton;
 		private CropPresetsPanel _cropPresetsPanel;
+		private CycleGroupsPanel _cycleGroupsPanel;
 		private System.Windows.Forms.ComboBox _cycleCropPresetCombo;
 		private System.Windows.Forms.Button _cycleCropApplyButton;
-		private System.Windows.Forms.CheckBox _showSolarSystemOverlayCheckBox;
+		private System.Windows.Forms.Button _cycleCropClearButton;
+		private OverlaySettingsPanel _overlaySettingsPanel;
 		#endregion
 
 		public MainForm(ApplicationContext context)
 		{
 			this._context = context;
 			this._zoomAnchorMap = new Dictionary<ViewZoomAnchor, RadioButton>();
-			this._overlayLabelMap = new Dictionary<ViewZoomAnchor, RadioButton>();
-			this._cycleGroupIndicatorMap = new Dictionary<ViewZoomAnchor, RadioButton>();
 			this._cachedThumbnailZoomAnchor = ViewZoomAnchor.NW;
 			this._suppressEvents = false;
 			this._minimumSize = new Size(20, 20);
@@ -56,18 +58,21 @@ namespace EveOPreview.View
 
 			InitializeComponent();
 			this.InitializeCropPresetsTab();
-			this.InitializeCycleGroupCropControls();
-			this.InitializeSolarSystemOverlayControl();
+			this.InitializeCycleGroupsPanel();
+			this.InitializeOverlaySettingsPanel();
 
 			this.ThumbnailsList.DisplayMember = "Title";
 
 			SetupConfigList();
 
 			this.InitZoomAnchorMap();
-			this.InitOverlayLabelMap();
-			this.InitCycleGroupIndicatorMap();
 			this.InitFormSize();
+			// WinForms performs one more font/DPI scaling pass when the handle is
+			// shown. Re-assert the management size after that pass as well.
+			this.Shown += (sender, args) => this.EnsureManagementMinimumSize();
 
+			this.AnimationStyleCombo.Format += this.EnumCombo_Format;
+			this.CaptionOnClientsStyleCombo.Format += this.EnumCombo_Format;
 			this.AnimationStyleCombo.DataSource = Enum.GetValues(typeof(AnimationStyle));
 			this.CaptionOnClientsStyleCombo.DataSource = Enum.GetValues(typeof(CaptionBarStyle));
 		}
@@ -118,10 +123,16 @@ namespace EveOPreview.View
 
 		public string Language
 		{
-			get => this.LanguageCombo.Text;
+			get => (this.LanguageCombo.SelectedItem as LanguageOption)?.Code ?? "en-US";
 			set
 			{
-				this.LanguageCombo.Text = value;
+				LanguageOption option = this.LanguageCombo.Items
+					.OfType<LanguageOption>()
+					.FirstOrDefault(item => string.Equals(item.Code, value, StringComparison.OrdinalIgnoreCase));
+				if (option != null)
+				{
+					this.LanguageCombo.SelectedItem = option;
+				}
 			}
 		}
 
@@ -253,80 +264,38 @@ namespace EveOPreview.View
 
 		public ViewZoomAnchor OverlayLabelAnchor
 		{
-			get
-			{
-				if (this._overlayLabelMap[this._cachedOverlayLabelAnchor].Checked)
-				{
-					return this._cachedOverlayLabelAnchor;
-				}
+			get => this._overlaySettingsPanel.CharacterLabelAnchor;
+			set => this._overlaySettingsPanel.CharacterLabelAnchor = value;
+		}
 
-				foreach (KeyValuePair<ViewZoomAnchor, RadioButton> valuePair in this._overlayLabelMap)
-				{
-					if (!valuePair.Value.Checked)
-					{
-						continue;
-					}
-
-					this._cachedOverlayLabelAnchor = valuePair.Key;
-					return this._cachedOverlayLabelAnchor;
-				}
-
-				// Default Value
-				return ViewZoomAnchor.NW;
-			}
-			set
-			{
-				this._cachedOverlayLabelAnchor = value;
-				this._overlayLabelMap[this._cachedOverlayLabelAnchor].Checked = true;
-			}
+		public ViewZoomAnchor SolarSystemLabelAnchor
+		{
+			get => this._overlaySettingsPanel.SolarSystemLabelAnchor;
+			set => this._overlaySettingsPanel.SolarSystemLabelAnchor = value;
 		}
 
 		public ViewZoomAnchor CycleGroupIndicatorAnchor
 		{
-			get
-			{
-				if (this._cycleGroupIndicatorMap[this._cachedCycleGroupIndicatorAnchor].Checked)
-				{
-					return this._cachedCycleGroupIndicatorAnchor;
-				}
-
-				foreach (KeyValuePair<ViewZoomAnchor, RadioButton> valuePair in this._cycleGroupIndicatorMap)
-				{
-					if (!valuePair.Value.Checked)
-					{
-						continue;
-					}
-
-					this._cachedCycleGroupIndicatorAnchor = valuePair.Key;
-					return this._cachedCycleGroupIndicatorAnchor;
-				}
-
-				// Default Value
-				return ViewZoomAnchor.NW;
-			}
-			set
-			{
-				this._cachedCycleGroupIndicatorAnchor = value;
-				this._cycleGroupIndicatorMap[this._cachedCycleGroupIndicatorAnchor].Checked = true;
-			}
+			get => this._overlaySettingsPanel.CycleGroupIndicatorAnchor;
+			set => this._overlaySettingsPanel.CycleGroupIndicatorAnchor = value;
 		}
 
 		public bool ShowThumbnailOverlays
 		{
-			get => this.ShowThumbnailOverlaysCheckBox.Checked;
-			set => this.ShowThumbnailOverlaysCheckBox.Checked = value;
+			get => this._overlaySettingsPanel.ShowThumbnailOverlays;
+			set => this._overlaySettingsPanel.ShowThumbnailOverlays = value;
 		}
 
 		public bool ShowSolarSystemOverlay
 		{
-			get => this._showSolarSystemOverlayCheckBox.Checked;
-			set => this._showSolarSystemOverlayCheckBox.Checked = value;
+			get => this._overlaySettingsPanel.ShowSolarSystemOverlay;
+			set => this._overlaySettingsPanel.ShowSolarSystemOverlay = value;
 		}
 
 		public bool ShowThumbnailFrames
 		{
-			get => this.ShowThumbnailFramesCheckBox.Checked;
-			set => this.ShowThumbnailFramesCheckBox.Checked = value;
+			get => this._overlaySettingsPanel.ShowThumbnailFrames;
+			set => this._overlaySettingsPanel.ShowThumbnailFrames = value;
 		}
 		public bool LockThumbnailLocation
 		{
@@ -351,20 +320,15 @@ namespace EveOPreview.View
 
 		public bool EnableActiveClientHighlight
 		{
-			get => this.EnableActiveClientHighlightCheckBox.Checked;
-			set => this.EnableActiveClientHighlightCheckBox.Checked = value;
+			get => this._overlaySettingsPanel.EnableActiveClientHighlight;
+			set => this._overlaySettingsPanel.EnableActiveClientHighlight = value;
 		}
 
 		public Color ActiveClientHighlightColor
 		{
-			get => this._activeClientHighlightColor;
-			set
-			{
-				this._activeClientHighlightColor = value;
-				this.ActiveClientHighlightColorButton.BackColor = value;
-			}
+			get => this._overlaySettingsPanel.ActiveClientHighlightColor;
+			set => this._overlaySettingsPanel.ActiveClientHighlightColor = value;
 		}
-		private Color _activeClientHighlightColor;
 
 		public Color PreventPreviewColor
 		{
@@ -379,25 +343,27 @@ namespace EveOPreview.View
 
 		public Color OverlayLabelColor
 		{
-			get => this._OverlayLabelColor;
-			set
-			{
-				this._OverlayLabelColor = value;
-				this.OverlayLabelColorButton.BackColor = value;
-			}
+			get => this._overlaySettingsPanel.CharacterLabelColor;
+			set => this._overlaySettingsPanel.CharacterLabelColor = value;
 		}
-		private Color _OverlayLabelColor;
 
 		public Font OverlayLabelFont
 		{
-			get => (Font)this._OverlayLabelFont;
-			set
-			{
-				this._OverlayLabelFont = value;
-				this.LabelOverlayLabelFont.Font = value;
-			}
+			get => this._overlaySettingsPanel.CharacterLabelFont;
+			set => this._overlaySettingsPanel.CharacterLabelFont = value;
 		}
-		private Font _OverlayLabelFont;
+
+		public Color SolarSystemLabelColor
+		{
+			get => this._overlaySettingsPanel.SolarSystemLabelColor;
+			set => this._overlaySettingsPanel.SolarSystemLabelColor = value;
+		}
+
+		public Font SolarSystemLabelFont
+		{
+			get => this._overlaySettingsPanel.SolarSystemLabelFont;
+			set => this._overlaySettingsPanel.SolarSystemLabelFont = value;
+		}
 
 		public new void Show()
 		{
@@ -439,9 +405,7 @@ namespace EveOPreview.View
 			foreach (IThumbnailDescription view in thumbnails)
 			{
 				this.ThumbnailsList.SetItemChecked(this.ThumbnailsList.Items.Add(view), view.IsDisabled);
-
-				if (!this.HotkeysClientsList.Items.Contains(view.Title)) this.HotkeysClientsList.Items.Add(view.Title, false);
-
+				this._cycleGroupsPanel?.SetClientOpen(view.Title, true);
 			}
 
 			this.ThumbnailsList.EndUpdate();
@@ -454,6 +418,7 @@ namespace EveOPreview.View
 			foreach (IThumbnailDescription view in thumbnails)
 			{
 				this.ThumbnailsList.Items.Remove(view);
+				this._cycleGroupsPanel?.SetClientOpen(view.Title, false);
 			}
 
 			this.ThumbnailsList.EndUpdate();
@@ -468,8 +433,6 @@ namespace EveOPreview.View
 
 		public Action ApplicationExitRequested { get; set; }
 		public Action<string> LoadNewSettings { get; set; }
-		public Action SaveSettings { get; set; }
-
 		public Action FormActivated { get; set; }
 
 		public Action FormMinimized { get; set; }
@@ -481,16 +444,13 @@ namespace EveOPreview.View
 		public Action ThumbnailsSizeChanged { get; set; }
 
 		public Action<string> ThumbnailStateChanged { get; set; }
-		public Action<string> CropRegionSelectionRequested { get; set; }
-		public Action<string> CropRegionResetRequested { get; set; }
-
 		public Action<string> CropPresetSelected
 		{
 			get => this._cropPresetsPanel.PresetSelected;
 			set => this._cropPresetsPanel.PresetSelected = value;
 		}
 
-		public Action<string> CropPresetCreateRequested
+		public Action<string, string> CropPresetCreateRequested
 		{
 			get => this._cropPresetsPanel.CreatePresetRequested;
 			set => this._cropPresetsPanel.CreatePresetRequested = value;
@@ -531,6 +491,9 @@ namespace EveOPreview.View
 			get => this._cropPresetsPanel.AssignCycleGroupRequested;
 			set => this._cropPresetsPanel.AssignCycleGroupRequested = value;
 		}
+
+		public Func<int, bool> CropCycleGroupClearRequested { get; set; }
+		public Func<string, int, bool> CropTemporaryCycleGroupAssignRequested { get; set; }
 
 		public Action DocumentationLinkActivated { get; set; }
 		public Action SelectedCycleGroupChanged { get; set; }
@@ -573,93 +536,44 @@ namespace EveOPreview.View
 
 		public int SelectedCycleGroup
 		{
-			get => (this.CycleGroupSelectorComboBox?.SelectedIndex ?? 0) + 1;
+			get => this._cycleGroupsPanel?.SelectedGroup ?? 1;
 			set
 			{
-				int idx = Math.Max(0, Math.Min(4, value - 1));
-				if (this.CycleGroupSelectorComboBox != null)
-				{
-					this.CycleGroupSelectorComboBox.SelectedIndex = idx;
-				}
+				if (this._cycleGroupsPanel != null) this._cycleGroupsPanel.SelectedGroup = value;
 			}
+		}
+
+		public bool SelectedCycleGroupIsTemporary
+		{
+			get => this._cycleGroupsPanel?.IsTemporary == true;
+			set { if (this._cycleGroupsPanel != null) this._cycleGroupsPanel.IsTemporary = value; }
 		}
 
 		public string CycleGroupForwardHotkeysText
 		{
-			get => this.HotkeysForwardListBox != null ? string.Join(",", this.HotkeysForwardListBox.Items.Cast<object>().Select(i => i.ToString())) : string.Empty;
-			set
-			{
-				if (this.HotkeysForwardListBox == null) return;
-				this.HotkeysForwardListBox.Items.Clear();
-				if (string.IsNullOrWhiteSpace(value)) return;
-				foreach (var part in value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()))
-				{
-					this.HotkeysForwardListBox.Items.Add(part);
-				}
-			}
+			get => this._cycleGroupsPanel?.ForwardHotkeysText ?? string.Empty;
+			set { if (this._cycleGroupsPanel != null) this._cycleGroupsPanel.ForwardHotkeysText = value; }
 		}
 
 		public string CycleGroupBackwardHotkeysText
 		{
-			get => this.HotkeysBackwardListBox != null ? string.Join(",", this.HotkeysBackwardListBox.Items.Cast<object>().Select(i => i.ToString())) : string.Empty;
-			set
-			{
-				if (this.HotkeysBackwardListBox == null) return;
-				this.HotkeysBackwardListBox.Items.Clear();
-				if (string.IsNullOrWhiteSpace(value)) return;
-				foreach (var part in value.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim()))
-				{
-					this.HotkeysBackwardListBox.Items.Add(part);
-				}
-			}
+			get => this._cycleGroupsPanel?.BackwardHotkeysText ?? string.Empty;
+			set { if (this._cycleGroupsPanel != null) this._cycleGroupsPanel.BackwardHotkeysText = value; }
 		}
 
 		public void SetAvailableClients(IList<string> clients)
 		{
-			if (this.HotkeysClientsList == null) return;
-			this.HotkeysClientsList.Items.Clear();
-			foreach (var c in clients)
-			{
-				this.HotkeysClientsList.Items.Add(c, false);
-			}
+			this._cycleGroupsPanel?.SetAvailableClients(clients);
 		}
 
 		public IList<string> GetSelectedClientsForCurrentGroup()
 		{
-			if (this.HotkeysClientsList == null) return new List<string>();
-			var ordered = new List<string>();
-			for (int i = 0; i < this.HotkeysClientsList.Items.Count; i++)
-			{
-				if (this.HotkeysClientsList.GetItemChecked(i))
-				{
-					ordered.Add(this.HotkeysClientsList.Items[i].ToString());
-				}
-			}
-			return ordered;
+			return this._cycleGroupsPanel?.GetOrderedMembers() ?? new List<string>();
 		}
 
 		public void SetSelectedClientsForCurrentGroup(IList<string> orderedClients)
 		{
-			if (this.HotkeysClientsList == null) return;
-			// Reorder items so orderedClients appear first in the given order, others follow
-			var all = this.HotkeysClientsList.Items.Cast<object>().Select(o => o.ToString()).ToList();
-			var newOrder = new List<string>();
-			if (orderedClients != null)
-			{
-				foreach (var s in orderedClients)
-				{
-					if (all.Contains(s) && !newOrder.Contains(s)) newOrder.Add(s);
-				}
-			}
-			foreach (var a in all)
-			{
-				if (!newOrder.Contains(a)) newOrder.Add(a);
-			}
-			this.HotkeysClientsList.Items.Clear();
-			foreach (var it in newOrder)
-			{
-				this.HotkeysClientsList.Items.Add(it, orderedClients != null && orderedClients.Contains(it));
-			}
+			this._cycleGroupsPanel?.SetOrderedMembers(orderedClients);
 		}
 
 		private void CycleGroupSelectorComboBox_SelectedIndexChanged(object sender, EventArgs e)
@@ -864,67 +778,6 @@ namespace EveOPreview.View
 			this.ThumbnailStateChanged?.Invoke(selectedItem.Title);
 		}
 
-		private void InitializeCropControls()
-		{
-			Control clientsPanel = this.ThumbnailsList.Parent;
-			foreach (Control oldLabel in clientsPanel.Controls.Find("ThumbnailsListLabel", false))
-			{
-				oldLabel.Visible = false;
-			}
-
-			Label cropHeader = new Label
-			{
-				AutoSize = true,
-				Location = new Point(8, 6),
-				Text = "Thumbnails (check to force hide)"
-			};
-
-			this._selectCropButton = new System.Windows.Forms.Button
-			{
-				Location = new Point(8, 30),
-				Size = new Size(150, 32),
-				Text = "Edit assigned crop...",
-				UseVisualStyleBackColor = true
-			};
-			this._selectCropButton.Click += this.SelectCropButton_Click;
-
-			this._resetCropButton = new System.Windows.Forms.Button
-			{
-				Location = new Point(166, 30),
-				Size = new Size(140, 32),
-				Text = "Use full window",
-				UseVisualStyleBackColor = true
-			};
-			this._resetCropButton.Click += this.ResetCropButton_Click;
-
-			Label cropHint = new Label
-			{
-				AutoSize = true,
-				Location = new Point(8, 66),
-				Text = "Select a client below, or manage reusable crops in the Crops tab."
-			};
-
-			clientsPanel.Controls.Add(cropHeader);
-			clientsPanel.Controls.Add(this._selectCropButton);
-			clientsPanel.Controls.Add(this._resetCropButton);
-			clientsPanel.Controls.Add(cropHint);
-
-			this.ThumbnailsList.Dock = DockStyle.None;
-			this.ThumbnailsList.Anchor = AnchorStyles.None;
-			void LayoutClientList()
-			{
-				const int listTop = 90;
-				this.ThumbnailsList.SetBounds(
-					0,
-					listTop,
-					clientsPanel.ClientSize.Width,
-					Math.Max(50, clientsPanel.ClientSize.Height - listTop));
-			}
-
-			clientsPanel.Resize += (sender, args) => LayoutClientList();
-			LayoutClientList();
-		}
-
 		private void InitializeCropPresetsTab()
 		{
 			this._cropPresetsPanel = new CropPresetsPanel();
@@ -949,6 +802,26 @@ namespace EveOPreview.View
 			contentTabControl.TabPages.Insert(Math.Max(0, clientsIndex), cropsTab);
 		}
 
+		private void InitializeCycleGroupsPanel()
+		{
+			this._cycleGroupsPanel = new CycleGroupsPanel();
+			this._cycleGroupsPanel.SelectionChanged = () => this.SelectedCycleGroupChanged?.Invoke();
+			this._cycleGroupsPanel.ContentsChanged = () => this.ApplicationSettingsChanged?.Invoke();
+			this._cycleGroupsPanel.ValidateHotkey = this.ValidateAndMaybeWarnHotkey;
+			this._cycleGroupsPanel.ApplyCropRequested = (presetId, group, temporary) =>
+			{
+				if (!this._cropPresetsPanel.ResolvePendingAssignments())
+				{
+					return false;
+				}
+				return temporary
+					? this.CropTemporaryCycleGroupAssignRequested?.Invoke(presetId, group) == true
+					: this.CropCycleGroupAssignRequested?.Invoke(presetId, group, false, false) == true;
+			};
+			this.CycleGroupTabPage.Controls.Clear();
+			this.CycleGroupTabPage.Controls.Add(this._cycleGroupsPanel);
+		}
+
 		private void InitializeCycleGroupCropControls()
 		{
 			FlowLayoutPanel cropPanel = new FlowLayoutPanel
@@ -967,41 +840,48 @@ namespace EveOPreview.View
 			this._cycleCropPresetCombo = new System.Windows.Forms.ComboBox
 			{
 				DropDownStyle = ComboBoxStyle.DropDownList,
-				Width = 135,
+				Width = 105,
 				Margin = new Padding(0, 2, 5, 2)
 			};
 			this._cycleCropPresetCombo.SelectedIndexChanged += (sender, args) =>
 				this._cycleCropApplyButton.Enabled = this._cycleCropPresetCombo.SelectedItem is CropPresetComboItem;
 			this._cycleCropApplyButton = new System.Windows.Forms.Button
 			{
-				Text = "Apply crop",
+				Text = "Apply group",
 				AutoSize = true,
 				Height = 30,
 				Enabled = false,
 				Margin = new Padding(0, 1, 0, 1)
 			};
 			this._cycleCropApplyButton.Click += this.CycleCropApplyButton_Click;
+			this._cycleCropClearButton = new System.Windows.Forms.Button
+			{
+				Text = "Clear group",
+				AutoSize = true,
+				Height = 30,
+				Margin = new Padding(5, 1, 0, 1)
+			};
+			this._cycleCropClearButton.Click += this.CycleCropClearButton_Click;
 			cropPanel.Controls.Add(this._cycleCropPresetCombo);
 			cropPanel.Controls.Add(this._cycleCropApplyButton);
+			cropPanel.Controls.Add(this._cycleCropClearButton);
 			this.CycleGroupTabPage.Controls.Add(cropPanel);
 			cropPanel.BringToFront();
 		}
 
-		private void InitializeSolarSystemOverlayControl()
+		private void InitializeOverlaySettingsPanel()
 		{
-			this._showSolarSystemOverlayCheckBox = new System.Windows.Forms.CheckBox
+			this._overlaySettingsPanel = new OverlaySettingsPanel
 			{
-				Name = "ShowSolarSystemOverlayCheckBox",
-				Text = "Show solar system from game logs",
-				AutoSize = true,
-				Checked = true,
-				Location = new Point(13, 285),
-				TabIndex = 48,
-				UseVisualStyleBackColor = true
+				ContentsChanged = () => this.OptionChanged_Handler(this, EventArgs.Empty)
 			};
-			this._showSolarSystemOverlayCheckBox.CheckedChanged += this.OptionChanged_Handler;
-			this.ShowThumbnailOverlaysCheckBox.Parent?.Controls.Add(this._showSolarSystemOverlayCheckBox);
-			this._showSolarSystemOverlayCheckBox.BringToFront();
+			TabPage overlayTabPage = this.ShowThumbnailOverlaysCheckBox.Parent?.Parent as TabPage;
+			if (overlayTabPage == null)
+			{
+				return;
+			}
+			overlayTabPage.Controls.Clear();
+			overlayTabPage.Controls.Add(this._overlaySettingsPanel);
 		}
 
 		public string SelectedCropPresetId => this._cropPresetsPanel.SelectedPresetId;
@@ -1015,28 +895,7 @@ namespace EveOPreview.View
 
 		private void SetCycleGroupCropPresets(IList<CropPreset> presets, string selectedPresetId)
 		{
-			string previousId = (this._cycleCropPresetCombo.SelectedItem as CropPresetComboItem)?.Id ?? selectedPresetId;
-			this._cycleCropPresetCombo.Items.Clear();
-			foreach (CropPreset preset in (presets ?? new List<CropPreset>())
-				.Where(preset => preset?.IsValid == true)
-				.OrderBy(preset => preset.Name, StringComparer.OrdinalIgnoreCase))
-			{
-				this._cycleCropPresetCombo.Items.Add(new CropPresetComboItem { Id = preset.Id, Name = preset.Name });
-			}
-
-			int selectedIndex = -1;
-			for (int index = 0; index < this._cycleCropPresetCombo.Items.Count; index++)
-			{
-				if (string.Equals((this._cycleCropPresetCombo.Items[index] as CropPresetComboItem)?.Id, previousId, StringComparison.Ordinal))
-				{
-					selectedIndex = index;
-					break;
-				}
-			}
-			this._cycleCropPresetCombo.SelectedIndex = selectedIndex >= 0
-				? selectedIndex
-				: (this._cycleCropPresetCombo.Items.Count > 0 ? 0 : -1);
-			this._cycleCropApplyButton.Enabled = this._cycleCropPresetCombo.SelectedItem is CropPresetComboItem;
+			this._cycleGroupsPanel?.SetCropPresets(presets, selectedPresetId);
 		}
 
 		private void CycleCropApplyButton_Click(object sender, EventArgs e)
@@ -1048,6 +907,16 @@ namespace EveOPreview.View
 			}
 
 			this.CropCycleGroupAssignRequested?.Invoke(preset.Id, this.SelectedCycleGroup, false, false);
+		}
+
+		private void CycleCropClearButton_Click(object sender, EventArgs e)
+		{
+			if (!this._cropPresetsPanel.ResolvePendingAssignments())
+			{
+				return;
+			}
+
+			this.CropCycleGroupClearRequested?.Invoke(this.SelectedCycleGroup);
 		}
 
 		public void SetCropPresetRegion(CropRegion region)
@@ -1072,44 +941,6 @@ namespace EveOPreview.View
 		public void SelectCropClients(IList<string> clients, bool onlyOpen)
 		{
 			this._cropPresetsPanel.SelectClients(clients, onlyOpen);
-		}
-
-		private void SelectCropButton_Click(object sender, EventArgs e)
-		{
-			if (!this.TryGetSelectedClientTitle(out string title))
-			{
-				return;
-			}
-
-			this.CropRegionSelectionRequested?.Invoke(title);
-		}
-
-		private void ResetCropButton_Click(object sender, EventArgs e)
-		{
-			if (!this.TryGetSelectedClientTitle(out string title))
-			{
-				return;
-			}
-
-			this.CropRegionResetRequested?.Invoke(title);
-		}
-
-		private bool TryGetSelectedClientTitle(out string title)
-		{
-			if (this.ThumbnailsList.SelectedItem is IThumbnailDescription selectedItem)
-			{
-				title = selectedItem.Title;
-				return true;
-			}
-
-			title = null;
-			MessageBox.Show(
-				this,
-				"Select a client in the list first.",
-				"No client selected",
-				MessageBoxButtons.OK,
-				MessageBoxIcon.Information);
-			return false;
 		}
 
 		private void DocumentationLinkClicked_Handler(object sender, LinkLabelLinkClickedEventArgs e)
@@ -1162,34 +993,13 @@ namespace EveOPreview.View
 			this._zoomAnchorMap[ViewZoomAnchor.S] = this.ZoomAanchorSRadioButton;
 			this._zoomAnchorMap[ViewZoomAnchor.SE] = this.ZoomAanchorSERadioButton;
 		}
-		private void InitOverlayLabelMap()
-		{
-			this._overlayLabelMap[ViewZoomAnchor.NW] = this.OverlayLabelNWRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.N] = this.OverlayLabelNRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.NE] = this.OverlayLabelNERadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.W] = this.OverlayLabelWRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.C] = this.OverlayLabelCRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.E] = this.OverlayLabelERadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.SW] = this.OverlayLabelSWRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.S] = this.OverlayLabelSRadioButton;
-			this._overlayLabelMap[ViewZoomAnchor.SE] = this.OverlayLabelSERadioButton;
-		}
-		private void InitCycleGroupIndicatorMap()
-		{
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.NW] = this.CycleGroupIndicatorNWRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.N] = this.CycleGroupIndicatorNRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.NE] = this.CycleGroupIndicatorNERadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.W] = this.CycleGroupIndicatorWRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.C] = this.CycleGroupIndicatorCRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.E] = this.CycleGroupIndicatorERadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.SW] = this.CycleGroupIndicatorSWRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.S] = this.CycleGroupIndicatorSRadioButton;
-			this._cycleGroupIndicatorMap[ViewZoomAnchor.SE] = this.CycleGroupIndicatorSERadioButton;
-		}
-
 		private void InitFormSize()
 		{
 			const int BUFFER_PIXEL_AMOUNT = 8;
+			// Runtime-created management panels are not included in the designer's
+			// font autoscaling pass. Keep enough real client area for their controls
+			// and for a useful multi-character list.
+			this.EnsureManagementMinimumSize();
 			// resize form height based on tabbed control item height
 			var tabControl = (System.Windows.Forms.TabControl)this.Controls.Find("ContentTabControl", false).First();
 			if (tabControl != null)
@@ -1201,6 +1011,14 @@ namespace EveOPreview.View
 					this.Height = calculatedHeight;
 				}
 			}
+		}
+
+		private void EnsureManagementMinimumSize()
+		{
+			Size managementMinimum = new Size(720, 560);
+			this.MinimumSize = managementMinimum;
+			this.Width = Math.Max(this.Width, managementMinimum.Width);
+			this.Height = Math.Max(this.Height, managementMinimum.Height);
 		}
 
 		private void btnLabelFont_Click(object sender, EventArgs e)
@@ -1240,13 +1058,32 @@ namespace EveOPreview.View
 		{
 			if (LanguageCombo.Items.Count == 0)
 			{
-				foreach (var l in LocalizationExtensions.GetLanguages())
+				foreach (string code in LocalizationExtensions.GetLanguages())
 				{
-					LanguageCombo.Items.Add(l);
+					string displayName;
+					try
+					{
+						CultureInfo culture = CultureInfo.GetCultureInfo(code);
+						displayName = culture.TextInfo.ToTitleCase(culture.NativeName);
+					}
+					catch (CultureNotFoundException)
+					{
+						displayName = code;
+					}
+					LanguageCombo.Items.Add(new LanguageOption
+					{
+						Code = code,
+						DisplayName = $"{displayName} ({code})"
+					});
 				}
 			}
 
 			LocalizationExtensions.ApplyLocalization(this);
+			this._cycleGroupsPanel?.ApplyLocalization();
+			this._cropPresetsPanel?.ApplyLocalization();
+			this._overlaySettingsPanel?.ApplyLocalization();
+			this.RefreshLocalizedEnumCombo(this.AnimationStyleCombo, typeof(AnimationStyle));
+			this.RefreshLocalizedEnumCombo(this.CaptionOnClientsStyleCombo, typeof(CaptionBarStyle));
 			this.NotifyIcon.Text = LocalizationExtensions.GetString($"{this.Name}.NotifyIcon", this.NotifyIcon.Text);
 			foreach (var v in this.TrayMenu.Items)
 			{
@@ -1258,6 +1095,39 @@ namespace EveOPreview.View
 				catch
 				{
 				}
+			}
+		}
+
+		private void EnumCombo_Format(object sender, ListControlConvertEventArgs e)
+		{
+			if (e.ListItem is Enum value)
+			{
+				e.Value = LocalizationExtensions.GetString(
+					$"Enums.{value.GetType().Name}.{value}",
+					value.ToString());
+			}
+		}
+
+		private void RefreshLocalizedEnumCombo(System.Windows.Forms.ComboBox combo, Type enumType)
+		{
+			object selectedValue = combo.SelectedItem;
+			bool wasSuppressingEvents = this._suppressEvents;
+			this._suppressEvents = true;
+			try
+			{
+				// WinForms caches the value produced by the Format event. Rebinding is
+				// required to discard strings from the previously selected language.
+				combo.DataSource = null;
+				combo.DataSource = Enum.GetValues(enumType);
+				if (selectedValue != null)
+				{
+					combo.SelectedItem = selectedValue;
+				}
+				combo.Refresh();
+			}
+			finally
+			{
+				this._suppressEvents = wasSuppressingEvents;
 			}
 		}
 
@@ -1350,7 +1220,7 @@ namespace EveOPreview.View
 
 		public void SetupConfigList()
 		{
-
+			this._configurationFilenames.Clear();
 			this.MenuConfigurationFile.DropDownItems.Clear();
 			this.MenuConfigurationFile.DropDownItems.Add(LocalizationExtensions.GetString("MainForm.MenuConfigurationFile.Reload", "Reload Configuration"));
 			this.MenuConfigurationFile.DropDownItems.Add(
@@ -1359,12 +1229,17 @@ namespace EveOPreview.View
 				}
 				);
 			
-			foreach (var filename in Directory.GetFiles(".", "Eve-O-Preview*.json"))
+			foreach (string filename in Directory.GetFiles(".", "Eve-O-Preview*.json")
+				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 			{
-				string displayName = filename.Replace("./", "", StringComparison.OrdinalIgnoreCase);
+				string fileNameOnly = Path.GetFileName(filename);
+				if (fileNameOnly.EndsWith(".last-good.json", StringComparison.OrdinalIgnoreCase) ||
+					fileNameOnly.IndexOf(".before-", StringComparison.OrdinalIgnoreCase) >= 0)
+				{
+					continue;
+				}
 
-				displayName = displayName.Replace(".//", "", StringComparison.OrdinalIgnoreCase);
-				displayName = displayName.Replace(".\\", "", StringComparison.OrdinalIgnoreCase);
+				string displayName = fileNameOnly;
 
 				if (displayName.Equals(ConfigurationStorage.CONFIGURATION_FILE_NAME, StringComparison.OrdinalIgnoreCase))
 				{
@@ -1376,8 +1251,7 @@ namespace EveOPreview.View
 					{
 						continue;
 					}
-					displayName = displayName.Replace("Eve-O-Preview-", "", StringComparison.OrdinalIgnoreCase);
-					displayName = displayName.Replace(".json", "", StringComparison.OrdinalIgnoreCase);
+					displayName = Path.GetFileNameWithoutExtension(displayName).Substring("Eve-O-Preview-".Length);
 				}
 
 				var mi = new ToolStripMenuItem()
@@ -1387,7 +1261,7 @@ namespace EveOPreview.View
 				};
 
 				this.MenuConfigurationFile.DropDownItems.Add(mi);
-				_configurationFilenames.Add(displayName, filename.Replace(".//","").Replace("./",""));
+				_configurationFilenames.Add(displayName, fileNameOnly);
 			}
 
 		}
@@ -1416,7 +1290,6 @@ namespace EveOPreview.View
 						}
 					}
 				}
-				this.SaveSettings?.Invoke();
 				this.LoadNewSettings?.Invoke(_configurationFilename);
 			}
 		}

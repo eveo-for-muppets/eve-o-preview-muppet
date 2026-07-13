@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Drawing;
+using System.Threading;
+using System.Threading.Tasks;
 using EveOPreview.Configuration;
 using EveOPreview.Configuration.Implementation;
 using EveOPreview.Mediator.Messages;
@@ -24,21 +26,33 @@ namespace EveOPreview.Presenters
 		private readonly IThumbnailConfiguration _configuration;
 		private readonly IConfigurationStorage _configurationStorage;
 		private readonly IThumbnailManager _thumbnailManager;
+		private readonly ICharacterLocationTracker _characterLocationTracker;
 		private readonly IDictionary<string, IThumbnailDescription> _descriptionsCache;
 		private bool _suppressSizeNotifications;
 
 		private bool _exitApplication;
 		private bool _isLoadingUi;
+		private bool _configurationSwitchInProgress;
+		private readonly SemaphoreSlim _saveSettingsLock = new SemaphoreSlim(1, 1);
 		private int _currentGroup = 1;
+		private bool _currentGroupIsTemporary;
 		#endregion
 
-		public MainFormPresenter(IApplicationController controller, IMainFormView view, IMediator mediator, IThumbnailConfiguration configuration, IConfigurationStorage configurationStorage, IThumbnailManager thumbnailManager)
+		public MainFormPresenter(
+			IApplicationController controller,
+			IMainFormView view,
+			IMediator mediator,
+			IThumbnailConfiguration configuration,
+			IConfigurationStorage configurationStorage,
+			IThumbnailManager thumbnailManager,
+			ICharacterLocationTracker characterLocationTracker)
 			: base(controller, view)
 		{
 			this._mediator = mediator;
 			this._configuration = configuration;
 			this._configurationStorage = configurationStorage;
 			this._thumbnailManager = thumbnailManager;
+			this._characterLocationTracker = characterLocationTracker;
 
 			this._descriptionsCache = new Dictionary<string, IThumbnailDescription>();
 
@@ -51,8 +65,6 @@ namespace EveOPreview.Presenters
 			this.View.ApplicationSettingsChanged = this.SaveApplicationSettings;
 			this.View.ThumbnailsSizeChanged = this.UpdateThumbnailsSize;
 			this.View.ThumbnailStateChanged = this.UpdateThumbnailState;
-			this.View.CropRegionSelectionRequested = this.SelectCropRegion;
-			this.View.CropRegionResetRequested = this.ResetCropRegion;
 			this.View.CropPresetSelected = this.OnCropPresetSelected;
 			this.View.CropPresetCreateRequested = this.CreateCropPreset;
 			this.View.CropPresetRenameRequested = this.RenameCropPreset;
@@ -61,11 +73,13 @@ namespace EveOPreview.Presenters
 			this.View.CropAssignmentsApplyRequested = this.ApplyCropAssignments;
 			this.View.CropCycleGroupSelectRequested = this.SelectCropCycleGroup;
 			this.View.CropCycleGroupAssignRequested = this.AssignCropToCycleGroup;
+			this.View.CropCycleGroupClearRequested = this.ClearCropFromCycleGroup;
+			this.View.CropTemporaryCycleGroupAssignRequested = this.AssignCropToTemporaryCycleGroup;
 			this.View.DocumentationLinkActivated = this.OpenDocumentationLink;
 			this.View.ApplicationExitRequested = this.ExitApplication;
 			this.View.LoadNewSettings = this.LoadNewSettings;
-			this.View.SaveSettings = this.SaveSettings;
 			this.View.IconName = this._configuration.IconName;
+			this._thumbnailManager.TemporaryCycleGroupsChanged += this.OnTemporaryCycleGroupsChanged;
 		}
 
 		private void Activate()
@@ -121,6 +135,7 @@ namespace EveOPreview.Presenters
 		{
 
 			this._configurationStorage.Load();
+			this._characterLocationTracker.ReloadConfiguration();
 			this._isLoadingUi = true;
 
 			if (!string.IsNullOrEmpty(this._configuration.Language) && this._configuration.Language != "en-US")
@@ -152,6 +167,7 @@ namespace EveOPreview.Presenters
 			this.View.ThumbnailZoomFactor = this._configuration.ThumbnailZoomFactor;
 			this.View.ThumbnailZoomAnchor = ViewZoomAnchorConverter.Convert(this._configuration.ThumbnailZoomAnchor);
 			this.View.OverlayLabelAnchor = ViewZoomAnchorConverter.Convert(this._configuration.OverlayLabelAnchor);
+			this.View.SolarSystemLabelAnchor = ViewZoomAnchorConverter.Convert(this._configuration.SolarSystemLabelAnchor);
 			this.View.CycleGroupIndicatorAnchor = ViewZoomAnchorConverter.Convert(this._configuration.CycleGroupIndicatorAnchor);
 
 			this.View.ShowThumbnailOverlays = this._configuration.ShowThumbnailOverlays;
@@ -167,13 +183,19 @@ namespace EveOPreview.Presenters
 
 			this.View.OverlayLabelColor = this._configuration.OverlayLabelColor;
 			this.View.OverlayLabelFont = this._configuration.OverlayLabelFont;
+			this.View.SolarSystemLabelColor = this._configuration.SolarSystemLabelColor;
+			this.View.SolarSystemLabelFont = this._configuration.SolarSystemLabelFont;
 
 			this.View.IconName = this._configuration.IconName;
 
 			// Hotkeys tab: populate clients and default group
-			var configuredClients = this._configuration.GetAllKnownClients();
+			var configuredClients = this._configuration.GetAllKnownClients()
+				.Where(client => !IsPlaceholderClient(client))
+				.ToList();
 			this.View.SetAvailableClients(configuredClients);
 			this._currentGroup = 1;
+			this._currentGroupIsTemporary = false;
+			this.View.SelectedCycleGroupIsTemporary = false;
 			this.View.SelectedCycleGroup = this._currentGroup;
 			this.LoadGroupToView(this._currentGroup);
 			this.RefreshCropsView();
@@ -187,13 +209,37 @@ namespace EveOPreview.Presenters
 		private void OnSelectedCycleGroupChanged()
 		{
 			if (this._isLoadingUi) return;
-			// Save current group's UI to config, then load new group's config into UI
-			this.SaveGroupFromView(this._currentGroup);
+			this.SaveCurrentCycleGroupFromView();
 			this._currentGroup = this.View.SelectedCycleGroup;
+			this._currentGroupIsTemporary = this.View.SelectedCycleGroupIsTemporary;
 			this.View.BeginUpdateUI();
-			this.LoadGroupToView(this._currentGroup);
+			this.LoadCurrentCycleGroupToView();
 			this.View.EndUpdateUI();
 			this._configurationStorage.Save();
+		}
+
+		private void LoadCurrentCycleGroupToView()
+		{
+			if (this._currentGroupIsTemporary)
+			{
+				this.LoadTemporaryGroupToView(this._currentGroup);
+			}
+			else
+			{
+				this.LoadGroupToView(this._currentGroup);
+			}
+		}
+
+		private void SaveCurrentCycleGroupFromView()
+		{
+			if (this._currentGroupIsTemporary)
+			{
+				this.SaveTemporaryGroupFromView(this._currentGroup);
+			}
+			else
+			{
+				this.SaveGroupFromView(this._currentGroup);
+			}
 		}
 
 		private void LoadGroupToView(int group)
@@ -205,7 +251,10 @@ namespace EveOPreview.Presenters
 			this.View.CycleGroupBackwardHotkeysText = string.Join(",", bwd);
 			// Set clients order
 			var orderDict = GetClientsOrder(group) ?? new Dictionary<string, int>();
-			var ordered = orderDict.OrderBy(kv => kv.Value).Select(kv => kv.Key).ToList();
+			var ordered = orderDict.OrderBy(kv => kv.Value)
+				.Select(kv => kv.Key)
+				.Where(client => !IsPlaceholderClient(client))
+				.ToList();
 			this.View.SetSelectedClientsForCurrentGroup(ordered);
 		}
 
@@ -303,7 +352,19 @@ namespace EveOPreview.Presenters
 
 		private async void SaveApplicationSettings()
 		{
-			if (this._isLoadingUi) return;
+			await this.SaveApplicationSettingsAsync();
+		}
+
+		private async Task SaveApplicationSettingsAsync(bool allowDuringConfigurationSwitch = false)
+		{
+			await this._saveSettingsLock.WaitAsync();
+			try
+			{
+				if (this._isLoadingUi ||
+					(this._configurationSwitchInProgress && !allowDuringConfigurationSwitch))
+				{
+					return;
+				}
 			this._configuration.MinimizeToTray = this.View.MinimizeToTray;
 
 			this._configuration.ThumbnailOpacity = (float)this.View.ThumbnailOpacity;
@@ -338,6 +399,7 @@ namespace EveOPreview.Presenters
 			this._configuration.ThumbnailZoomFactor = this.View.ThumbnailZoomFactor;
 			this._configuration.ThumbnailZoomAnchor = ViewZoomAnchorConverter.Convert(this.View.ThumbnailZoomAnchor);
 			this._configuration.OverlayLabelAnchor = ViewZoomAnchorConverter.Convert(this.View.OverlayLabelAnchor);
+			this._configuration.SolarSystemLabelAnchor = ViewZoomAnchorConverter.Convert(this.View.SolarSystemLabelAnchor);
 
 			if (this._configuration.CycleGroupIndicatorAnchor != ViewZoomAnchorConverter.Convert(this.View.CycleGroupIndicatorAnchor))
 			{
@@ -369,15 +431,23 @@ namespace EveOPreview.Presenters
 
 			this._configuration.OverlayLabelColor = this.View.OverlayLabelColor;
 			this._configuration.OverlayLabelFont = this.View.OverlayLabelFont;
+			this._configuration.SolarSystemLabelColor = this.View.SolarSystemLabelColor;
+			this._configuration.SolarSystemLabelFont = this.View.SolarSystemLabelFont;
 
 			this._configuration.IconName = this.View.IconName;
 
-			this.SaveGroupFromView(this._currentGroup);
+			this.SaveCurrentCycleGroupFromView();
+			this._characterLocationTracker.FlushToConfiguration();
 			this._configurationStorage.Save();
 			this.View.RefreshZoomSettings();
 			await this._mediator.Publish(new ThumbnailUpdateClientsLayouts());
 			await this._mediator.Send(new SaveConfiguration());
 			await this._mediator.Publish(new HotkeysConfigurationUpdated());
+			}
+			finally
+			{
+				this._saveSettingsLock.Release();
+			}
 		}
 
 
@@ -444,62 +514,40 @@ namespace EveOPreview.Presenters
 			await this._mediator.Send(new SaveConfiguration());
 		}
 
-		private void SelectCropRegion(string title)
+		private void LoadTemporaryGroupToView(int group)
 		{
-			IThumbnailView thumbnailView = this._thumbnailManager.GetClientByTitle(title);
-			if (thumbnailView == null)
+			this.View.CycleGroupForwardHotkeysText = string.Join(",", GetTemporaryHotkeys(
+				this._configuration.TemporaryCycleGroupForwardHotkeys, group));
+			this.View.CycleGroupBackwardHotkeysText = string.Join(",", GetTemporaryHotkeys(
+				this._configuration.TemporaryCycleGroupBackwardHotkeys, group));
+			this.View.SetSelectedClientsForCurrentGroup(this._thumbnailManager.GetTemporaryCycleGroupClients(group));
+		}
+
+		private void SaveTemporaryGroupFromView(int group)
+		{
+			this._configuration.TemporaryCycleGroupForwardHotkeys ??= new Dictionary<int, List<string>>();
+			this._configuration.TemporaryCycleGroupBackwardHotkeys ??= new Dictionary<int, List<string>>();
+			this._configuration.TemporaryCycleGroupForwardHotkeys[group] = ParseCsv(this.View.CycleGroupForwardHotkeysText);
+			this._configuration.TemporaryCycleGroupBackwardHotkeys[group] = ParseCsv(this.View.CycleGroupBackwardHotkeysText);
+			this._thumbnailManager.SetTemporaryCycleGroupClients(group, this.View.GetSelectedClientsForCurrentGroup());
+		}
+
+		private static List<string> GetTemporaryHotkeys(Dictionary<int, List<string>> hotkeysByGroup, int group)
+		{
+			return hotkeysByGroup != null && hotkeysByGroup.TryGetValue(group, out List<string> hotkeys)
+				? hotkeys ?? new List<string>()
+				: new List<string>();
+		}
+
+		private void OnTemporaryCycleGroupsChanged()
+		{
+			if (!this._currentGroupIsTemporary || this._isLoadingUi)
 			{
-				MessageBox.Show("That client is no longer available.", "Client unavailable", MessageBoxButtons.OK, MessageBoxIcon.Information);
 				return;
 			}
-
-			CropPreset assignedPreset = this._configuration.GetCropPresetForClient(title);
-			CropRegion selectedRegion = this.ShowCropSelector(
-				title,
-				thumbnailView,
-				assignedPreset?.Region ?? this._configuration.GetCropRegion(title));
-			if (selectedRegion == null)
-			{
-				return;
-			}
-
-			if (assignedPreset != null)
-			{
-				List<string> assignedClients = this.GetClientsAssignedToPreset(assignedPreset.Id);
-				if (assignedClients.Count > 1)
-				{
-					DialogResult result = MessageBox.Show(
-						$"‘{assignedPreset.Name}’ is used by {assignedClients.Count} characters.\n\n" +
-						"Yes: update the shared preset for all of them.\n" +
-						$"No: create a separate crop for {title}.",
-						"Edit shared crop preset",
-						MessageBoxButtons.YesNoCancel,
-						MessageBoxIcon.Question);
-					if (result == DialogResult.Cancel)
-					{
-						return;
-					}
-					if (result == DialogResult.No)
-					{
-						string personalPresetId = this._configuration.CreateCropPreset(
-							this.CreateUniqueCropName($"Custom - {ShortClientName(title)}"),
-							selectedRegion);
-						this._configuration.AssignCropPreset(title, personalPresetId);
-						this.SaveAndRefreshCrops(new[] { title }, personalPresetId);
-						return;
-					}
-				}
-
-				IList<string> affected = this._configuration.UpdateCropPresetRegion(assignedPreset.Id, selectedRegion);
-				this.SaveAndRefreshCrops(affected, assignedPreset.Id);
-				return;
-			}
-
-			string presetId = this._configuration.CreateCropPreset(
-				this.CreateUniqueCropName($"Custom - {ShortClientName(title)}"),
-				selectedRegion);
-			this._configuration.AssignCropPreset(title, presetId);
-			this.SaveAndRefreshCrops(new[] { title }, presetId);
+			this.View.BeginUpdateUI();
+			this.LoadTemporaryGroupToView(this._currentGroup);
+			this.View.EndUpdateUI();
 		}
 
 		private CropRegion ShowCropSelector(string title, IThumbnailView thumbnailView, CropRegion initialRegion)
@@ -521,13 +569,9 @@ namespace EveOPreview.Presenters
 				thumbnailView.WindowManager,
 				thumbnailView.Id,
 				initialRegion);
-			return selector.ShowDialog() == DialogResult.OK ? selector.SelectedRegion : null;
-		}
-
-		private void ResetCropRegion(string title)
-		{
-			this._configuration.UnassignCropPreset(title);
-			this.SaveAndRefreshCrops(new[] { title }, this.View.SelectedCropPresetId);
+			IWin32Window owner = this.View as IWin32Window;
+			DialogResult result = owner == null ? selector.ShowDialog() : selector.ShowDialog(owner);
+			return result == DialogResult.OK ? selector.SelectedRegion : null;
 		}
 
 		private void OnCropPresetSelected(string presetId)
@@ -535,9 +579,33 @@ namespace EveOPreview.Presenters
 			this.LoadCropPresetToView(presetId);
 		}
 
-		private void CreateCropPreset(string name)
+		private void CreateCropPreset(string name, string sourceClient)
 		{
-			string presetId = this._configuration.CreateCropPreset(name, new CropRegion(0.0, 0.0, 1.0, 1.0));
+			if (this._configuration.CropPresets?.Values.Any(preset =>
+				string.Equals(preset?.Name, name?.Trim(), StringComparison.OrdinalIgnoreCase)) == true)
+			{
+				MessageBox.Show("Crop preset names must be unique.", "Unable to create preset", MessageBoxButtons.OK, MessageBoxIcon.Information);
+				return;
+			}
+
+			IThumbnailView thumbnailView = this._thumbnailManager.GetClientByTitle(sourceClient);
+			if (thumbnailView == null)
+			{
+				MessageBox.Show("The selected source client is no longer open.", "Unable to create preset", MessageBoxButtons.OK, MessageBoxIcon.Information);
+				this.View.SetCropSourceClients(this.GetOpenClients());
+				return;
+			}
+
+			CropRegion selectedRegion = this.ShowCropSelector(
+				sourceClient,
+				thumbnailView,
+				new CropRegion(0.0, 0.0, 1.0, 1.0));
+			if (selectedRegion == null)
+			{
+				return;
+			}
+
+			string presetId = this._configuration.CreateCropPreset(name, selectedRegion);
 			if (presetId == null)
 			{
 				MessageBox.Show("Crop preset names must be unique.", "Unable to create preset", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -664,7 +732,8 @@ namespace EveOPreview.Presenters
 				return current != null && !string.Equals(current.Id, presetId, StringComparison.Ordinal);
 			});
 
-			string message = $"Assign ‘{preset.Name}’ to {groupClients.Count} current member(s) of Cycle Group {group}?";
+			string message = $"Assign ‘{preset.Name}’ to {groupClients.Count} current member(s) of Cycle Group {group}?" +
+				"\n\nThis is a one-time assignment; characters added to the group later are not changed automatically.";
 			if (conflicts > 0)
 			{
 				message += $"\n\n{conflicts} character(s) currently use another crop preset.";
@@ -679,6 +748,81 @@ namespace EveOPreview.Presenters
 				this._configuration.AssignCropPreset(client, presetId);
 			}
 			this.SaveAndRefreshCrops(groupClients, presetId);
+			return true;
+		}
+
+		private bool ClearCropFromCycleGroup(int group)
+		{
+			List<string> affectedClients = this.GetCycleGroupClients(group)
+				.Where(client => this._configuration.GetCropPresetForClient(client) != null)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
+			if (affectedClients.Count == 0)
+			{
+				MessageBox.Show(
+					$"No current member of Cycle Group {group} has a crop assigned.",
+					"Nothing to clear",
+					MessageBoxButtons.OK,
+					MessageBoxIcon.Information);
+				return true;
+			}
+
+			if (MessageBox.Show(
+				$"Return {affectedClients.Count} current member(s) of Cycle Group {group} to Full window?\n\n" +
+				"This is a one-time change to the group's current members.",
+				"Clear Cycle Group crops",
+				MessageBoxButtons.YesNo,
+				MessageBoxIcon.Question) != DialogResult.Yes)
+			{
+				return false;
+			}
+
+			foreach (string client in affectedClients)
+			{
+				this._configuration.UnassignCropPreset(client);
+			}
+			this.SaveAndRefreshCrops(affectedClients, this.View.SelectedCropPresetId);
+			return true;
+		}
+
+		private bool AssignCropToTemporaryCycleGroup(string presetId, int group)
+		{
+			CropPreset preset = this._configuration.GetCropPreset(presetId);
+			if (preset == null)
+			{
+				return false;
+			}
+			List<string> clients = this._thumbnailManager.GetTemporaryCycleGroupClients(group)
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
+			if (clients.Count == 0)
+			{
+				MessageBox.Show(
+					$"Temp {group} has no members.",
+					"Nothing to assign",
+					MessageBoxButtons.OK,
+					MessageBoxIcon.Information);
+				return true;
+			}
+			int conflicts = clients.Count(client =>
+			{
+				CropPreset current = this._configuration.GetCropPresetForClient(client);
+				return current != null && !string.Equals(current.Id, presetId, StringComparison.Ordinal);
+			});
+			string message = $"Assign ‘{preset.Name}’ to {clients.Count} current member(s) of Temp {group}?";
+			if (conflicts > 0)
+			{
+				message += $"\n\n{conflicts} character(s) currently use another crop preset.";
+			}
+			if (MessageBox.Show(message, "Assign crop to temporary group", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+			{
+				return false;
+			}
+			foreach (string client in clients)
+			{
+				this._configuration.AssignCropPreset(client, presetId);
+			}
+			this.SaveAndRefreshCrops(clients, presetId);
 			return true;
 		}
 
@@ -760,29 +904,12 @@ namespace EveOPreview.Presenters
 
 		private List<string> GetCycleGroupClients(int group)
 		{
-			if (!this._isLoadingUi && group == this._currentGroup)
+			if (!this._isLoadingUi && !this._currentGroupIsTemporary && group == this._currentGroup)
 			{
 				this.SaveGroupFromView(this._currentGroup);
 			}
 			Dictionary<string, int> clients = GetClientsOrder(group) ?? new Dictionary<string, int>();
 			return clients.OrderBy(entry => entry.Value).Select(entry => entry.Key).ToList();
-		}
-
-		private string CreateUniqueCropName(string baseName)
-		{
-			string candidate = baseName;
-			int suffix = 2;
-			while (this._configuration.CropPresets?.Values.Any(preset =>
-				string.Equals(preset?.Name, candidate, StringComparison.OrdinalIgnoreCase)) == true)
-			{
-				candidate = $"{baseName} {suffix++}";
-			}
-			return candidate;
-		}
-
-		private static string ShortClientName(string title)
-		{
-			return (title ?? string.Empty).Replace("EVE - ", string.Empty, StringComparison.OrdinalIgnoreCase);
 		}
 
 		private static bool IsPlaceholderClient(string title)
@@ -836,25 +963,37 @@ namespace EveOPreview.Presenters
 			return _descriptionsCache?.Select(x => x.Value.Title).ToList();
 		}
 
-		public void LoadNewSettings(string filename)
+		public async void LoadNewSettings(string filename)
 		{
-			if (filename != null && filename.Length > 0)
+			if (this._configurationSwitchInProgress)
 			{
-				this._configurationStorage.SetConfigurationFilename(filename);
+				return;
 			}
 
-			this.LoadApplicationSettings();
+			this._configurationSwitchInProgress = true;
+			try
+			{
+				// Finish saving the active profile before changing the storage target.
+				// Otherwise an async UI save can overwrite the newly selected JSON.
+				await this.SaveApplicationSettingsAsync(allowDuringConfigurationSwitch: true);
+				await this._mediator.Send(new StopService());
+				if (!string.IsNullOrEmpty(filename))
+				{
+					this._configurationStorage.SetConfigurationFilename(filename);
+				}
 
-			this._mediator.Publish(new ThumbnailFrameSettingsUpdated());
-			this._mediator.Publish(new ThumbnailApplyAllClientsLayouts());
-			this._mediator.Publish(new ThumbnailCycleGroupIndicatorUpdated());
-			this.View.RefreshZoomSettings();
-			this._mediator.Publish(new HotkeysConfigurationUpdated());
-		}
+				this.LoadApplicationSettings();
 
-		public void SaveSettings()
-		{
-			this.SaveApplicationSettings();
+				await this._mediator.Publish(new ThumbnailFrameSettingsUpdated());
+				await this._mediator.Publish(new ThumbnailApplyAllClientsLayouts());
+				await this._mediator.Publish(new ThumbnailCycleGroupIndicatorUpdated());
+				this.View.RefreshZoomSettings();
+				await this._mediator.Publish(new HotkeysConfigurationUpdated());
+			}
+			finally
+			{
+				this._configurationSwitchInProgress = false;
+			}
 		}
 	}
 }
